@@ -1,4 +1,4 @@
-import { CATEGORIES, REAGENTS, FLAME_COLORS, ACTIVITY_SERIES, PERIODIC_TABLE } from './reagents.js';
+import { CATEGORIES, REAGENTS, FLAME_COLORS, ACTIVITY_SERIES, PERIODIC_TABLE } from './reagents.js?v=2.1.1';
 import {
   VESSELS,
   GAS_INFO,
@@ -6,13 +6,13 @@ import {
   cloneLabState,
   analyzeChemistry,
   stepSimulation
-} from './chemistry.js';
-import { TASKS } from './tasks.js';
-import { SoundEngine } from './audio.js';
-import { MicroWorld } from './micro.js';
-import { Lab3DScene } from './lab3d.js';
-import { buildReportHTML } from './report.js';
-import { getReagentIconSVG, getCategoryIconSVG, getReagentHazardKind } from './icons.js';
+} from './chemistry.js?v=2.1.1';
+import { TASKS } from './tasks.js?v=2.1.1';
+import { SoundEngine } from './audio.js?v=2.1.1';
+import { MicroWorld } from './micro.js?v=2.1.1';
+import { Lab3DScene } from './lab3d.js?v=2.1.1';
+import { buildReportHTML } from './report.js?v=2.1.1';
+import { getReagentIconSVG, getCategoryIconSVG, getReagentHazardKind } from './icons.js?v=2.1.1';
 
 const STORAGE_DONE_KEY = 'chemlab3d.done.v1';
 const THEMES = ['classic', 'slate', 'warm'];
@@ -292,20 +292,20 @@ class ChemLabApp {
     });
 
     // Приборы и лабораторные установки на столе
-    this.dom.btnBurner.addEventListener('click', () => this.toggleBurner());
-    this.dom.btnIceBath.addEventListener('click', () => this.toggleIceBath());
-    this.dom.btnStirrer.addEventListener('click', () => this.toggleStirrer());
-    this.dom.btnBurette.addEventListener('click', () => this.toggleBurette());
-    this.dom.btnBuretteDrop.addEventListener('click', () => this.runBuretteDrop());
-    this.dom.btnElectrolysis.addEventListener('click', () => this.toggleElectrolysis());
-    this.dom.btnFilter.addEventListener('click', () => this.runFiltration());
-    this.dom.btnGasTube.addEventListener('click', () => this.toggleTube());
-    this.dom.btnSplint.addEventListener('click', () => this.runSplintTest());
-    this.dom.btnFlameLoop.addEventListener('click', () => this.runFlameLoopTest());
-    this.dom.btnTongs.addEventListener('click', () => this.runTongsAction());
-    this.dom.btnSmell.addEventListener('click', () => this.runSmellTest());
-    this.dom.btnMicro.addEventListener('click', () => this.toggleMicro());
-    this.dom.btnCloseMicro.addEventListener('click', () => this.toggleMicro(false));
+    this.dom.btnBurner?.addEventListener('click', () => this.toggleBurner());
+    this.dom.btnIceBath?.addEventListener('click', () => this.toggleIceBath());
+    this.dom.btnStirrer?.addEventListener('click', () => this.toggleStirrer());
+    this.dom.btnBurette?.addEventListener('click', () => this.toggleBurette());
+    this.dom.btnBuretteDrop?.addEventListener('click', () => this.runBuretteDrop());
+    this.dom.btnElectrolysis?.addEventListener('click', () => this.toggleElectrolysis());
+    this.dom.btnFilter?.addEventListener('click', () => this.runFiltration());
+    this.dom.btnGasTube?.addEventListener('click', () => this.toggleTube());
+    this.dom.btnSplint?.addEventListener('click', () => this.runSplintTest());
+    this.dom.btnFlameLoop?.addEventListener('click', () => this.runFlameLoopTest());
+    this.dom.btnTongs?.addEventListener('click', () => this.runTongsAction());
+    this.dom.btnSmell?.addEventListener('click', () => this.runSmellTest());
+    this.dom.btnMicro?.addEventListener('click', () => this.toggleMicro());
+    this.dom.btnCloseMicro?.addEventListener('click', () => this.toggleMicro(false));
 
     // Шкаф реактивов
     this.dom.reagentSearch.addEventListener('input', (e) => {

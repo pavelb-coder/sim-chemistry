@@ -1,6 +1,6 @@
 import * as THREE from '../vendor/three.module.min.js';
-import { REAGENTS } from './reagents.js';
-import { VESSELS } from './chemistry.js';
+import { REAGENTS } from './reagents.js?v=2.1.1';
+import { VESSELS } from './chemistry.js?v=2.1.1';
 
 const CAMERA_PRESETS = {
   all:    { pos: [0.35, 2.48, 7.15], target: [0.32, 1.42, 0], fov: 35 },
@@ -1002,7 +1002,7 @@ export class Lab3DScene {
   _buildWashBottle() {
     // Пластиковая промывалка с дистиллированной водой H₂O слева на столе
     const wb = new THREE.Group();
-    wb.position.set(-2.12, 0, 0.26);
+    wb.position.set(-1.52, 0, 0.26);
 
     const body = new THREE.Mesh(
       new THREE.CylinderGeometry(0.24, 0.26, 0.84, 26),
@@ -1323,8 +1323,8 @@ export class Lab3DScene {
 
     // 6. Лабораторные электронные весы (0,01 г) справа на столе
     this.balanceGroup = new THREE.Group();
-    const balX = 2.34;
-    const balZ = 0.22;
+    const balX = 1.62;
+    const balZ = 0.48;
     const balBody = new THREE.Mesh(
       new THREE.BoxGeometry(0.62, 0.14, 0.56),
       new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.32, metalness: 0.06 })
@@ -2080,7 +2080,11 @@ export class Lab3DScene {
     const w = Math.max(200, rect.width);
     const h = Math.max(200, rect.height);
     this.renderer.setSize(w, h, false);
-    this.camera.aspect = w / h;
+    const aspect = w / h;
+    this.camera.aspect = aspect;
+    // При узких пропорциях центральной панели расширяем вертикальный угол обзора,
+    // чтобы боковые приборы на столе (промывалка и электронные весы) всегда помещались в кадр
+    this.camera.fov = aspect < 1.38 ? Math.min(48, 34 * Math.pow(1.38 / Math.max(0.72, aspect), 0.58)) : 34;
     this.camera.updateProjectionMatrix();
     this.wake(400);
   }

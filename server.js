@@ -44,11 +44,14 @@ const server = http.createServer((req, res) => {
 
       const ext = path.extname(safePath).toLowerCase();
       const contentType = MIME[ext] || 'application/octet-stream';
+      const isVendor = relPath.startsWith('/vendor/');
       const headers = {
         'Content-Type': contentType,
         'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'strict-origin-when-cross-origin',
-        'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600'
+        'Cache-Control': isVendor ? 'public, max-age=86400' : 'no-cache, no-store, must-revalidate',
+        'Pragma': isVendor ? 'public' : 'no-cache',
+        'Expires': '0'
       };
 
       const acceptEncoding = req.headers['accept-encoding'] || '';

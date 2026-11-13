@@ -1,4 +1,4 @@
-import { REAGENTS, FLAME_COLORS } from './reagents.js';
+import { REAGENTS, FLAME_COLORS } from './reagents.js?v=2.1.1';
 
 export const VESSELS = {
   flask: {

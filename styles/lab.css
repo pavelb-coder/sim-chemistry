@@ -345,13 +345,9 @@ button:focus-visible, input:focus-visible {
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 14px;
-  overflow-x: auto;
-}
-
-.toolbar::-webkit-scrollbar {
-  height: 0;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  padding: 6px 12px;
 }
 
 .seg-group {
