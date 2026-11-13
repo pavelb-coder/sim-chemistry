@@ -576,15 +576,28 @@ class ChemLabApp {
       this.scene3d.triggerToolAnimation('splint', { flare: true, flashColor: '#fde047', flashPower: 10 });
       this.showToast('Лучина ярко вспыхнула! Газ поддерживает горение — это кислород O₂.');
       this._log('Проба лучиной: яркая вспышка в кислороде O₂');
-    } else if (targetGas === 'CO2') {
+    } else if (targetGas === 'C2H2') {
       this._pushUndoSnapshot();
-      this.labState.seen.splint.CO2 = true;
+      this.labState.seen.splint.C2H2 = true;
+      if (this.labState.tubeOn && coll.C2H2) this.labState.collectedGas.C2H2 = Math.max(0, coll.C2H2 - 5);
+      this.sound.play('flare');
+      this.scene3d.triggerToolAnimation('splint', { sootyFlare: true, flashColor: '#fb923c', flashPower: 9 });
+      this.showToast('Ацетилен C₂H₂ вспыхнул ярким светящимся коптящим пламенем с хлопьями чёрной сажи!');
+      this._log('Проба лучиной: яркое коптящее пламя ацетилена C₂H₂ (непредельный углеводород)');
+    } else if (targetGas === 'CO2' || targetGas === 'N2' || targetGas === 'SO2') {
+      this._pushUndoSnapshot();
+      this.labState.seen.splint[targetGas] = true;
       this.scene3d.triggerToolAnimation('splint', { extinguish: true });
-      this.showToast('Горящая лучина мгновенно погасла — углекислый газ CO₂ не поддерживает горение.');
-      this._log('Проба лучиной: пламя погасло в углекислом газе CO₂');
+      const gasNames = {
+        CO2: 'углекислый газ CO₂ не поддерживает горение',
+        N2: 'инертный азот N₂ не поддерживает горение',
+        SO2: 'сернистый газ SO₂ гасит пламя'
+      };
+      this.showToast(`Горящая лучина мгновенно погасла — ${gasNames[targetGas]}.`);
+      this._log(`Проба лучиной: пламя погасло в газе ${GAS_INFO[targetGas]?.formula || targetGas}`);
     } else {
       this.scene3d.triggerToolAnimation('splint', {});
-      this.showToast('Лучина горит спокойно, как в обычном воздухе (нет избытка H₂, O₂ или CO₂).');
+      this.showToast('Лучина горит спокойно, как в обычном воздухе (нет избытка H₂, O₂, C₂H₂, CO₂ или N₂).');
       this._log('Проба лучиной: изменений горения нет');
     }
     this._syncAllUI();
@@ -603,7 +616,7 @@ class ChemLabApp {
     const cat = analysis.flameCations[0];
     if (!cat) {
       this.scene3d.triggerToolAnimation('loop', { color: '#ff9e44' });
-      this.showToast('В растворе нет катионов, характерно окрашивающих пламя (попробуйте Li⁺, Na⁺, K⁺, Ca²⁺, Ba²⁺, Cu²⁺)');
+      this.showToast('В растворе нет катионов, окрашивающих пламя (попробуйте Li⁺, Na⁺, K⁺, Ca²⁺, Sr²⁺, Ba²⁺, Cu²⁺)');
       return;
     }
     this._pushUndoSnapshot();
@@ -619,17 +632,30 @@ class ChemLabApp {
 
   runTongsAction() {
     const sel = this.selectedReagent;
-    if (!['mg', 'fe', 'cu'].includes(sel)) {
-      this.showToast('Выберите в шкафу реактивов магний (Mg), железо (Fe) или медь (Cu), чтобы взять образец тигельными щипцами');
+    if (!['mg', 'fe', 'cu', 's'].includes(sel)) {
+      this.showToast('Выберите в шкафу реактивов магний (Mg), железо (Fe), медь (Cu) или серу (S) для прокаливания в щипцах');
       return;
     }
     if (this.labState.heatLvl === 0) {
-      this.showToast('Сначала зажгите спиртовку для прокаливания металла в щипцах');
+      this.showToast('Сначала зажгите спиртовку для зажигания/прокаливания образца в щипцах');
       return;
     }
 
     this._pushUndoSnapshot();
-    if (sel === 'mg') {
+    if (sel === 's') {
+      const preA = analyzeChemistry(this.labState);
+      this.sound.play('ignite');
+      this.scene3d.triggerToolAnimation('tongs', { metal: 's', sulfurBurn: true, color: '#38bdf8', flashColor: '#38bdf8', flashPower: 7, dur: 2.6 });
+      this.labState.seen.sulfurBurn = true;
+      if (preA.wet) {
+        this.labState.amt.h2so3 = (this.labState.amt.h2so3 || 0) + 5;
+        this.showToast('Сера горит нежно-голубым пламенем (S + O₂ → SO₂↑)! Сернистый газ растворился в воде с образованием H₂SO₃.');
+      } else {
+        this.labState.headspace = { gas: 'SO2', amount: 0.9 };
+        this.showToast('Сера горит голубым пламенем с резким запахом сернистого газа (S + O₂ → SO₂↑)!');
+      }
+      this._log('Горение серы в ложечке/щипцах: S + O₂ → SO₂↑ (голубое пламя)');
+    } else if (sel === 'mg') {
       this.sound.play('flare');
       this.scene3d.triggerToolAnimation('tongs', { metal: 'mg', color: '#ffffff', flashColor: '#ffffff', flashPower: 14, dur: 2.5 });
       this.labState.amt.mgo = (this.labState.amt.mgo || 0) + 1;

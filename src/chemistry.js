@@ -28,15 +28,17 @@ export const VESSELS = {
 };
 
 export const GAS_INFO = {
-  H2:  { formula: 'H₂',  name: 'водород',         soluble: false, color: '#ffffff', smell: '' },
-  O2:  { formula: 'O₂',  name: 'кислород',        soluble: false, color: '#ffffff', smell: '' },
-  CO2: { formula: 'CO₂', name: 'углекислый газ',  soluble: false, color: '#ffffff', smell: '' },
-  NO:  { formula: 'NO',  name: 'оксид азота(II)', soluble: false, color: '#d97706', smell: 'резкий запах оксидов азота' },
-  NO2: { formula: 'NO₂', name: 'оксид азота(IV)', soluble: true,  color: '#b45309', smell: 'резкий удушливый запах бурого газа NO₂' },
-  SO2: { formula: 'SO₂', name: 'сернистый газ',   soluble: true,  color: '#ffffff', smell: 'резкий запах жжёной серы (SO₂)' },
-  H2S: { formula: 'H₂S', name: 'сероводород',     soluble: true,  color: '#ffffff', smell: 'неприятный запах тухлых яиц (H₂S)' },
-  NH3: { formula: 'NH₃', name: 'аммиак',          soluble: true,  color: '#ffffff', smell: 'резкий запах нашатырного спирта (NH₃)' },
-  Cl2: { formula: 'Cl₂', name: 'хлор',            soluble: true,  color: '#bef264', smell: 'резкий удушливый запах хлора' }
+  H2:   { formula: 'H₂',   name: 'водород',         soluble: false, color: '#ffffff', smell: '' },
+  O2:   { formula: 'O₂',   name: 'кислород',        soluble: false, color: '#ffffff', smell: '' },
+  N2:   { formula: 'N₂',   name: 'азот',            soluble: false, color: '#ffffff', smell: '' },
+  CO2:  { formula: 'CO₂',  name: 'углекислый газ',  soluble: false, color: '#ffffff', smell: '' },
+  C2H2: { formula: 'C₂H₂', name: 'ацетилен',        soluble: false, color: '#ffffff', smell: 'характерный запах технического ацетилена' },
+  NO:   { formula: 'NO',   name: 'оксид азота(II)', soluble: false, color: '#d97706', smell: 'резкий запах оксидов азота' },
+  NO2:  { formula: 'NO₂',  name: 'оксид азота(IV)', soluble: true,  color: '#b45309', smell: 'резкий удушливый запах бурого газа NO₂' },
+  SO2:  { formula: 'SO₂',  name: 'сернистый газ',   soluble: true,  color: '#ffffff', smell: 'резкий запах жжёной серы (SO₂)' },
+  H2S:  { formula: 'H₂S',  name: 'сероводород',     soluble: true,  color: '#ffffff', smell: 'неприятный запах тухлых яиц (H₂S)' },
+  NH3:  { formula: 'NH₃',  name: 'аммиак',          soluble: true,  color: '#ffffff', smell: 'резкий запах нашатырного спирта (NH₃)' },
+  Cl2:  { formula: 'Cl₂',  name: 'хлор',            soluble: true,  color: '#bef264', smell: 'резкий удушливый запах хлора' }
 };
 
 export function createInitialLabState(vessel = 'flask') {
@@ -55,8 +57,10 @@ export function createInitialLabState(vessel = 'flask') {
       silverMirror: 0,
       sublimedRing: 0,
       copperPlated: 0,
+      silverPlated: 0,
       anhydrousWhite: 0,
-      carbonFoam: 0
+      carbonFoam: 0,
+      volcanoAsh: 0
     },
     seen: {
       gases: {},
@@ -69,9 +73,17 @@ export function createInitialLabState(vessel = 'flask') {
       mirror: false,
       sublimed: false,
       charred: false,
+      volcano: false,
       clBurn: false,
       displacedCu: false,
-      rehydratedCu: false
+      displacedAg: false,
+      rehydratedCu: false,
+      coHydrolysis: false,
+      manganate: false,
+      ester: false,
+      xantho: false,
+      hotPbI2: false,
+      goldenRainRecryst: false
     },
     simTime: 0
   };
@@ -245,6 +257,29 @@ export function analyzeChemistry(state) {
       addCat('NH4', eq);
       addAn('Cl', eq);
     }
+    if (r.carbide && wet && p > 0) {
+      // CaC₂ + 2H₂O → Ca(OH)₂ + C₂H₂↑
+      const reacted = q * p * 0.9;
+      baseEq += reacted;
+      strongBaseEq += reacted;
+      addCat('Ca', reacted);
+    }
+    if (r.volcano && wet && (prog.volcano || 0) < 0.45) {
+      const eq = q * 0.75;
+      addCat('NH4', eq);
+      addAn('Cr2O7', eq);
+    }
+    if (r.dryO2 && wet && (prog.dry_kmno4 || 0) < 0.45) {
+      const eq = q * 0.75;
+      addCat('K', eq);
+      addAn('MnO4', eq);
+    }
+  }
+
+  // Объединяем хромат и дихромат в общий пул Cr(VI) (2CrO₄²⁻ + 2H⁺ ⇄ Cr₂O₇²⁻ + H₂O)
+  if ((anions.CrO4 || 0) > 0) {
+    addAn('Cr2O7', anions.CrO4);
+    anions.CrO4 = 0;
   }
 
   // 3. Расходование кислоты карбонатами, сульфитами и сульфидами растворов
@@ -258,8 +293,33 @@ export function analyzeChemistry(state) {
     }
   }
 
-  // 4. Вытеснение меди активными металлами (Fe, Zn, Mg, Al + Cu²⁺ → Cu↓ + Me²⁺)
+  // 3б. Необратимый совместный гидролиз Al³⁺ / Fe³⁺ / Cr³⁺ с карбонатами, сульфитами и сульфидами
+  let coHydrolysis = false;
+  let fe3SulfideRedox = false;
+  if (wet) {
+    // Особый случай ОВР: 2Fe³⁺ + 3S²⁻ → 2FeS↓ + S↓
+    if ((cations.Fe3 || 0) > 0.04 && (anions.S || 0) > 0.04) {
+      const used = Math.min(cations.Fe3, anions.S);
+      cations.Fe3 -= used;
+      anions.S -= used;
+      addCat('Fe2', used * 0.5);
+      fe3SulfideRedox = true;
+    }
+    const triCat = (cations.Al || 0) + (cations.Fe3 || 0) + (cations.Cr || 0);
+    const weakGasAn = (anions.CO3 || 0) + (anions.HCO3 || 0) + (anions.SO3 || 0) + ((cations.Al || 0) + (cations.Cr || 0) > 0.03 ? (anions.S || 0) : 0);
+    if (triCat > 0.04 && weakGasAn > 0.04 && Math.abs(baseEq - acidEq) < 0.35) {
+      coHydrolysis = true;
+      for (const ga of ['CO3', 'HCO3', 'SO3', 'S']) {
+        if ((anions[ga] || 0) > 0) anions[ga] *= 0.15;
+      }
+      // Гидролиз создаёт нейтрально-слабощелочную область осаждения гидроксидов Me(OH)₃↓
+      baseEq = Math.max(baseEq, acidEq + 0.06);
+    }
+  }
+
+  // 4. Вытеснение меди и серебра более активными металлами (цементация)
   let displacedCu = false;
+  let displacedAg = false;
   if (wet && (cations.Cu || 0) > 0.05) {
     const displacer = ['fe', 'zn', 'mg', 'al'].find((m) => (amt[m] || 0) > 0 && (prog[m + ':disp'] || 0) > 0.05);
     if (displacer) {
@@ -270,49 +330,137 @@ export function analyzeChemistry(state) {
       displacedCu = dp > 0.2;
     }
   }
+  if (wet && (cations.Ag || 0) > 0.04) {
+    const agDisp = ['cu', 'fe', 'zn', 'mg', 'al'].find((m) => (amt[m] || 0) > 0 && (prog[m + ':ag'] || 0) > 0.05);
+    if (agDisp) {
+      const dp = Math.min(1, prog[agDisp + ':ag'] || 0);
+      const shift = Math.min(cations.Ag, dp * 1.1);
+      cations.Ag -= shift;
+      addCat(REAGENTS[agDisp].ion, shift * 0.65);
+      displacedAg = dp > 0.2;
+    }
+  }
 
   // 5. Окислительно-восстановительные реакции в растворе
   const redox = {};
   let freeIodine = (amt.i2 || 0) / 10;
-  const hasReducer =
+  let freeBromine = (amt.br2 || 0) / 10;
+  let manganateGreen = (wet && (amt.kmno4s || 0) > 0 && (prog.dry_kmno4 || 0) >= 0.45) ? 0.6 : 0;
+  let cr3Green = (cations.Cr || 0);
+  const netPre = baseEq - acidEq;
+
+  if (fe3SulfideRedox) redox.fe3Sulfide = true;
+
+  // Диспропорционирование зелёного манганата MnO₄²⁻ при подкислении → фиолетовый MnO₄⁻ + MnO₂↓
+  if (manganateGreen > 0 && netPre < -0.03) {
+    addAn('MnO4', manganateGreen * 0.65);
+    manganateGreen = 0;
+    redox.manganateDisprop = true;
+  }
+
+  const hasStrongReducer =
     (anions.SO3 || 0) > 0.03 ||
+    (anions.S2O3 || 0) > 0.03 ||
+    (anions.NO2 || 0) > 0.03 ||
     (amt.na2so3 || 0) > 0 ||
+    (amt.na2s2o3 || 0) > 0 ||
     (amt.h2so3 || 0) > 0 ||
+    (amt.hcooh || 0) > 0 ||
     (cations.Fe2 || 0) > 0.03 ||
     (anions.I || 0) > 0.04 ||
     (amt.h2s || 0) > 0 ||
     (amt.na2s || 0) > 0 ||
     (amt.h2o2 || 0) > 0;
 
-  // Хлорная вода / Cl₂ окисляет иодид
+  const hasOrganicReducer = (amt.glucose || 0) > 0 || ((amt.ethanol || 0) > 0 && state.temp >= 45);
+  const hasReducer = hasStrongReducer || hasOrganicReducer;
+
+  // Хлор Cl₂ или бромная вода Br₂ вытесняют свободный иод I₂ из иодида KI
   if ((state.headspace?.gas === 'Cl2' && state.headspace.amount > 0.2) && (anions.I || 0) > 0.05 && wet) {
     const ox = Math.min(anions.I, 0.5);
     anions.I -= ox;
     freeIodine += ox * 0.8;
     redox.clOxI = true;
   }
+  if (wet && freeBromine > 0.02 && (anions.I || 0) > 0.04) {
+    const ox = Math.min(freeBromine, anions.I * 0.7);
+    freeBromine -= ox;
+    anions.I -= ox;
+    addAn('Br', ox);
+    freeIodine += ox * 0.85;
+    redox.brOxI = true;
+  }
 
-  // Перманганат калия в кислой среде обесцвечивается восстановителями
-  const netPre = baseEq - acidEq;
-  if (wet && (anions.MnO4 || 0) > 0.02 && hasReducer && netPre < -0.05) {
-    redox.mno4Decolorized = true;
+  // Нитрит натрия в кислой среде окисляет иодид до I₂ с выделением NO
+  if (wet && (anions.NO2 || 0) > 0.03 && (anions.I || 0) > 0.04 && netPre < -0.04) {
+    const ox = Math.min(anions.NO2, anions.I * 0.7);
+    anions.NO2 -= ox;
+    anions.I -= ox;
+    freeIodine += ox * 0.8;
+    redox.no2OxI = true;
+  }
+
+  // ОВР меди(II) с иодидом калия: 2Cu²⁺ + 4I⁻ → 2CuI↓(белый) + I₂
+  let cuIodidePrecip = false;
+  if (wet && (cations.Cu || 0) > 0.04 && (anions.I || 0) > 0.06 && nh3Eq < 0.05) {
+    const ox = Math.min(cations.Cu, anions.I * 0.55);
+    cations.Cu -= ox;
+    anions.I -= ox * 1.6;
+    freeIodine += ox * 0.75;
+    cuIodidePrecip = true;
+    redox.cuOxI = true;
+  }
+
+  // Перманганат калия KMnO₄ в 3 различных средах (кислая → Mn²⁺, нейтральная → MnO₂↓, щелочная → зелёный MnO₄²⁻)
+  if (wet && (anions.MnO4 || 0) > 0.02 && hasReducer) {
+    if (netPre < -0.04) {
+      redox.mno4Decolorized = true;
+      if ((cations.Fe2 || 0) > 0) {
+        addCat('Fe3', cations.Fe2);
+        cations.Fe2 = 0;
+      }
+      if ((anions.I || 0) > 0.04) {
+        freeIodine += Math.min(anions.I, anions.MnO4 * 1.5);
+      }
+      anions.MnO4 = 0;
+      addCat('Mn', 0.3);
+    } else if (netPre > 0.18 && ((amt.na2so3 || 0) > 0 || (amt.glucose || 0) > 0 || (amt.ki || 0) > 0 || (amt.ethanol || 0) > 0 || (amt.na2s2o3 || 0) > 0)) {
+      // Сильнощелочная среда: «химический хамелеон» — переход фиолетового MnO₄⁻ в изумрудно-зелёный манганат MnO₄²⁻
+      redox.mno4Alkaline = true;
+      manganateGreen += anions.MnO4 * 1.1;
+      anions.MnO4 = 0;
+    } else {
+      // Нейтральная / слабощелочная среда: выпадение бурого осадка MnO₂↓
+      redox.mno4Neutral = true;
+      anions.MnO4 = 0;
+    }
+  }
+
+  // Дихромат / хромат в кислой среде восстанавливается до изумрудно-зелёного Cr³⁺ (включая окисление этанола при нагреве)
+  if (wet && (anions.Cr2O7 || 0) > 0.02 && hasReducer && netPre < -0.04 && (amt.h2o2 || 0) === 0) {
+    redox.cr2o7Reduced = true;
+    cr3Green += anions.Cr2O7;
+    addCat('Cr', anions.Cr2O7 * 0.8);
     if ((cations.Fe2 || 0) > 0) {
       addCat('Fe3', cations.Fe2);
       cations.Fe2 = 0;
     }
-    if ((anions.I || 0) > 0.04) {
-      freeIodine += Math.min(anions.I, anions.MnO4 * 1.5);
-    }
-    anions.MnO4 = 0;
-    addCat('Mn', 0.3);
+    anions.Cr2O7 = 0;
   }
 
-  // Дихромат калия в кислой среде восстанавливается сульфитами / Fe²⁺ / H₂S до зелёного Cr³⁺
-  let cr3Green = 0;
-  if (wet && (anions.Cr2O7 || 0) > 0.02 && hasReducer && netPre < -0.05 && (amt.h2o2 || 0) === 0) {
-    redox.cr2o7Reduced = true;
-    cr3Green = anions.Cr2O7;
-    anions.Cr2O7 = 0;
+  // Окисление хрома(III) пероксидом водорода в щелочной среде → жёлтый хромат CrO₄²⁻
+  if (wet && (cations.Cr || 0) > 0.03 && (amt.h2o2 || 0) > 0 && netPre > 0.18) {
+    addAn('Cr2O7', cations.Cr);
+    cr3Green = 0;
+    cations.Cr = 0;
+    redox.cr3ToCrO4 = true;
+  }
+
+  // Окисление Fe²⁺ пероксидом водорода (мгновенное побурение осадка Fe(OH)₂ → Fe(OH)₃)
+  if (wet && (cations.Fe2 || 0) > 0.03 && (amt.h2o2 || 0) > 0) {
+    addCat('Fe3', cations.Fe2);
+    cations.Fe2 = 0;
+    redox.fe2OxH2O2 = true;
   }
 
   // Fe³⁺ окисляет I⁻ до I₂
@@ -324,18 +472,33 @@ export function analyzeChemistry(state) {
     redox.feOxI = true;
   }
 
-  // Иод обесцвечивается сульфитом или щёлочью
-  if (freeIodine > 0 && ((amt.na2so3 || 0) > 0 || (amt.h2so3 || 0) > 0 || (netPre > 0.25))) {
+  // Обесцвечивание иодной и бромной воды тиосульфатом, сульфитом, муравьиной к-той, щёлочью, фенолом или ацетиленом
+  const clearsHalogen =
+    (amt.na2so3 || 0) > 0 ||
+    (amt.na2s2o3 || 0) > 0 ||
+    (amt.h2so3 || 0) > 0 ||
+    netPre > 0.25;
+  if (freeIodine > 0 && clearsHalogen) {
     freeIodine = 0;
     redox.iodineCleared = true;
   }
+  if (freeBromine > 0 && (clearsHalogen || (amt.phenol || 0) > 0 || (amt.cac2 || 0) > 0 || (amt.hcooh || 0) > 0)) {
+    freeBromine = 0;
+    redox.bromineCleared = true;
+  }
 
-  // 6. Расчёт pH раствора (с учётом гидролиза солей)
+  // 6. Расчёт pH раствора (с учётом гидролиза солей и ацетатного буфера)
   let pH = null;
   const net = baseEq - acidEq;
   if (wet) {
     const effVol = Math.max(6, vol);
-    if (net < -0.035) {
+    // Ацетатный буфер (CH₃COOH + CH₃COONa без избытка сильных кислот/щелочей)
+    if ((amt.ch3cooh || 0) > 0 && (amt.ch3coona || 0) > 0 && strongAcidEq < 0.02 && strongBaseEq < 0.02) {
+      const ratio = (amt.ch3coona || 1) / Math.max(1, amt.ch3cooh || 1);
+      pH = Math.max(3.6, Math.min(5.9, 4.75 + Math.log10(ratio)));
+    } else if (coHydrolysis && Math.abs(net) < 0.2) {
+      pH = 7.8;
+    } else if (net < -0.035) {
       const conc = (-net * 10) / effVol;
       if (strongAcidEq > 0.02) {
         pH = Math.max(0.6, Math.min(3.6, 1.4 - Math.log10(Math.max(0.04, conc))));
@@ -352,9 +515,9 @@ export function analyzeChemistry(state) {
     } else {
       // Вблизи точки эквивалентности — учёт гидролиза солей
       if ((anions.CO3 || 0) > 0.04 || (anions.SiO3 || 0) > 0.04 || (anions.S || 0) > 0.04) pH = 10.7;
-      else if ((anions.SO3 || 0) > 0.04) pH = 9.1;
-      else if ((anions.HCO3 || 0) > 0.04) pH = 8.4;
-      else if ((cations.Al || 0) > 0.04 || (cations.Fe3 || 0) > 0.04) pH = 4.5;
+      else if ((anions.SO3 || 0) > 0.04 || (anions.Ac || 0) > 0.06) pH = 8.9;
+      else if ((anions.HCO3 || 0) > 0.04 || (anions.NO2 || 0) > 0.04) pH = 8.3;
+      else if ((cations.Al || 0) > 0.04 || (cations.Fe3 || 0) > 0.04 || (cations.Cr || 0) > 0.04) pH = 4.4;
       else if ((cations.Cu || 0) > 0.04 || (cations.Zn || 0) > 0.04 || (cations.Fe2 || 0) > 0.04 || (cations.NH4 || 0) > 0.04 || (cations.Pb || 0) > 0.04) pH = 5.4;
       else pH = 7.0;
     }
@@ -369,6 +532,9 @@ export function analyzeChemistry(state) {
   if (wet && (cations.Fe3 || 0) > 0.02 && (anions.SCN || 0) > 0.02) {
     complexes.feSCN = true; // [Fe(SCN)]²⁺ кроваво-красный
   }
+  if (wet && (cations.Fe3 || 0) > 0.02 && (amt.phenol || 0) > 0 && pH !== null && pH >= 2.2 && pH <= 8.5) {
+    complexes.fePhenol = true; // Фиолетовый фенолят железа(III)
+  }
   if (wet && hasProtein && (cations.Cu || 0) > 0.02 && pH !== null && pH >= 9.6) {
     complexes.biuret = true; // Биуретовая реакция (фиолетовый)
   }
@@ -378,11 +544,17 @@ export function analyzeChemistry(state) {
   if (wet && (cations.Cu || 0) > 0.03 && hasPolyol && pH !== null && pH >= 9.0 && !complexes.cuAmmonia && !complexes.biuret) {
     complexes.cuPolyol = true; // Глицерат / глюконат меди(II) сапфирово-синий
   }
+  if (wet && (cations.Ag || 0) > 0.02 && (anions.S2O3 || 0) > (cations.Ag || 0) * 1.35) {
+    complexes.agThiosulfate = true; // Растворение AgCl/AgBr в тиосульфате [Ag(S₂O₃)₂]³⁻
+  }
   if (wet && (cations.Ag || 0) > 0.02 && nh3Eq > (cations.Ag || 0) * 0.85) {
     complexes.agAmmonia = true; // Реактив Толленса [Ag(NH₃)₂]⁺
   }
   if (wet && (cations.Al || 0) > 0.03 && strongBaseEq > acidEq + (cations.Al || 0) * 1.45) {
     complexes.alHydroxo = true; // Натрия тетрагидроксоалюминат Na[Al(OH)₄]
+  }
+  if (wet && (cations.Cr || 0) > 0.03 && strongBaseEq > acidEq + (cations.Cr || 0) * 1.45) {
+    complexes.crHydroxo = true; // Изумрудный гексагидроксохромат(III) Na₃[Cr(OH)₆]
   }
   if (wet && (cations.Zn || 0) > 0.03 && (strongBaseEq > acidEq + (cations.Zn || 0) * 1.45 || nh3Eq > (cations.Zn || 0) * 1.3)) {
     complexes.znComplex = true; // [Zn(OH)₄]²⁻ или [Zn(NH₃)₄]²⁺
@@ -390,8 +562,11 @@ export function analyzeChemistry(state) {
   if (wet && freeIodine > 0.02 && (amt.starch || 0) > 0 && state.temp < 68) {
     complexes.starchIodine = true; // Синий клатрат иод-крахмал
   }
+  if (manganateGreen > 0.02) {
+    complexes.manganate = true;
+  }
 
-  // 8. Осадки (с учётом кислотности среды и комплексов)
+  // 8. Осадки (с учётом кислотности среды, температуры и комплексов)
   const precipitates = [];
   const pushPr = (formula, name, color, amount = 0.6) => {
     if (!precipitates.some((p) => p.formula === formula)) {
@@ -400,14 +575,43 @@ export function analyzeChemistry(state) {
   };
 
   if (wet) {
-    // Кислотонерастворимые осадки
+    // Гексацианоферратные комплексы («берлинская лазурь», «турнбулева синь», гексацианоферрат меди)
+    if ((cations.Fe3 || 0) > 0.02 && (anions.FeCN6_4 || 0) > 0.02) {
+      pushPr('Fe₄[Fe(CN)₆]₃', 'тёмно-синий осадок «берлинской лазури»', '#1e3a8a', 0.95);
+    }
+    if ((cations.Fe2 || 0) > 0.02 && (anions.FeCN6_3 || 0) > 0.02) {
+      pushPr('Fe₃[Fe(CN)₆]₂', 'тёмно-синий осадок «турнбулевой сини»', '#1d4ed8', 0.95);
+    }
+    if ((cations.Cu || 0) > 0.02 && (anions.FeCN6_4 || 0) > 0.02 && !complexes.cuAmmonia) {
+      pushPr('Cu₂[Fe(CN)₆]', 'красно-бурый осадок гексацианоферрата(II) меди', '#7f1d1d', 0.9);
+    }
+
+    // Кислотонерастворимые сульфаты
     if ((cations.Ba || 0) > 0.03 && (anions.SO4 || 0) > 0.03) {
       pushPr('BaSO₄', 'белый мелкокристаллический осадок сульфата бария', '#ffffff', 0.9);
+    }
+    if ((cations.Sr || 0) > 0.03 && (anions.SO4 || 0) > 0.03) {
+      pushPr('SrSO₄', 'белый осадок сульфата стронция', '#f8fafc', 0.85);
     }
     if ((cations.Pb || 0) > 0.03 && (anions.SO4 || 0) > 0.03) {
       pushPr('PbSO₄', 'белый осадок сульфата свинца(II)', '#f8fafc', 0.8);
     }
-    if ((cations.Ag || 0) > 0.02 && !complexes.agAmmonia) {
+
+    // Малорастворимые хроматы (в нейтральной и слабокислой/щелочной среде)
+    if ((anions.Cr2O7 || 0) > 0.03 && pH !== null && pH >= 5.2) {
+      if ((cations.Ba || 0) > 0.03 && !precipitates.some((p) => p.formula === 'BaSO₄')) {
+        pushPr('BaCrO₄', 'жёлтый осадок хромата бария', '#facc15', 0.88);
+      }
+      if ((cations.Pb || 0) > 0.03) {
+        pushPr('PbCrO₄', 'ярко-жёлтый осадок хромата свинца(II)', '#eab308', 0.9);
+      }
+      if ((cations.Ag || 0) > 0.03 && !complexes.agAmmonia && !complexes.agThiosulfate) {
+        pushPr('Ag₂CrO₄', 'кирпично-красный осадок хромата серебра(I)', '#b91c1c', 0.9);
+      }
+    }
+
+    // Соли серебра (растворимы в тиосульфате и аммиаке сообразно прочности комплексов)
+    if ((cations.Ag || 0) > 0.02 && !complexes.agAmmonia && !complexes.agThiosulfate) {
       if ((anions.S || 0) > 0.02 || (amt.h2s || 0) > 0) {
         pushPr('Ag₂S', 'чёрный осадок сульфида серебра(I)', '#18181b', 0.9);
       } else if ((anions.I || 0) > 0.02) {
@@ -423,22 +627,62 @@ export function analyzeChemistry(state) {
       }
     }
 
+    // Осадок PbI₂ («золотой дождь») — растворяется в горячей воде (≥ 78 °C) и перекристаллизуется при охлаждении!
     if ((cations.Pb || 0) > 0.02) {
       if ((anions.S || 0) > 0.02 || (amt.h2s || 0) > 0) {
         pushPr('PbS', 'чёрный осадок сульфида свинца(II)', '#18181b', 0.9);
-      } else if ((anions.I || 0) > 0.02) {
-        pushPr('PbI₂', 'золотисто-жёлтый искрящийся осадок иодида свинца («золотой дождь»)', '#fbbf24', 0.95);
+      } else if ((anions.I || 0) > 0.02 && state.temp < 78) {
+        const recryst = !!state.seen?.hotPbI2;
+        pushPr(
+          'PbI₂',
+          recryst
+            ? 'крупные искрящиеся золотые чешуйки PbI₂ («золотой дождь» после перекристаллизации)'
+            : 'золотисто-жёлтый осадок иодида свинца («золотой дождь»)',
+          '#fbbf24',
+          0.95
+        );
       }
+    }
+
+    if (cuIodidePrecip) {
+      pushPr('CuI', 'белый мелкокристаллический осадок иодида меди(I)', '#f5f5f4', 0.82);
+    }
+    if (fe3SulfideRedox) {
+      pushPr('FeS', 'чёрный осадок сульфида железа(II) и серы', '#1c1917', 0.9);
+    }
+    if (redox.mno4Neutral || redox.manganateDisprop || ((amt.kmno4s || 0) > 0 && (prog.dry_kmno4 || 0) >= 0.45)) {
+      pushPr('MnO₂', 'бурый осадок оксида марганца(IV)', '#451a03', 0.82);
+    }
+    if ((prog.thiosulf_s || 0) >= 0.32) {
+      pushPr('S(колл.)', 'молочно-жёлтая муть коллоидной серы', '#fef08a', 0.85);
+    }
+    if ((amt.phenol || 0) > 0 && (amt.br2 || 0) > 0) {
+      pushPr('C₆H₂Br₃OH', 'белый осадок 2,4,6-трибромфенола', '#f8fafc', 0.88);
+    }
+    if ((prog.xantho || 0) >= 0.4) {
+      const alkOrange = pH !== null && pH >= 9.0;
+      pushPr(
+        'Нитробелок',
+        alkOrange ? 'ярко-оранжевый сгусток белка (ксантопротеиновая реакция в щёлочи)' : 'жёлтый сгусток денатурированного белка (ксантопротеиновая реакция)',
+        alkOrange ? '#ea580c' : '#facc15',
+        0.88
+      );
+    } else if ((prog.prot_denat || 0) >= 0.5) {
+      pushPr('Белок(свёрн.)', 'белые хлопья денатурированного при кипячении белка', '#f8fafc', 0.8);
     }
 
     if ((cations.Cu || 0) > 0.02 && ((anions.S || 0) > 0.02 || (amt.h2s || 0) > 0)) {
       pushPr('CuS', 'чёрный осадок сульфида меди(II)', '#171717', 0.9);
     }
 
-    // Осадки карбонатов и силикатов (растворимы в избытке сильной кислоты)
+    // Осадки карбонатов (вкл. помутнение известковой/баритовой воды от CO₂) и силикатов
     if (pH >= 6.8) {
-      if ((cations.Ca || 0) > 0.03 && (anions.CO3 || 0) > 0.03) {
-        pushPr('CaCO₃', 'белый осадок карбоната кальция (помутнение)', '#f8fafc', 0.8);
+      const limeWithCO2 = ((amt.caoh2 || 0) > 0 && (prog.lime_co2 || 0) > 0.2 && (prog.lime_co2 || 0) < 0.88);
+      if (((cations.Ca || 0) > 0.03 && (anions.CO3 || 0) > 0.03) || limeWithCO2) {
+        pushPr('CaCO₃', 'белое помутнение карбоната кальция', '#f8fafc', 0.8);
+      }
+      if ((cations.Sr || 0) > 0.03 && (anions.CO3 || 0) > 0.03 && !precipitates.some((p) => p.formula === 'SrSO₄')) {
+        pushPr('SrCO₃', 'белый осадок карбоната стронция', '#f8fafc', 0.8);
       }
       if ((cations.Ba || 0) > 0.03 && (anions.CO3 || 0) > 0.03 && !precipitates.some((p) => p.formula === 'BaSO₄')) {
         pushPr('BaCO₃', 'белый осадок карбоната бария', '#f8fafc', 0.8);
@@ -449,22 +693,25 @@ export function analyzeChemistry(state) {
     }
 
     // Гидроксиды металлов
-    if (pH >= 7.6) {
-      if ((cations.Cu || 0) > 0.03 && !complexes.cuAmmonia && !complexes.cuPolyol && !complexes.biuret && !precipitates.some((p) => p.formula === 'CuS')) {
+    if (pH >= 7.4) {
+      if ((cations.Cu || 0) > 0.03 && !complexes.cuAmmonia && !complexes.cuPolyol && !complexes.biuret && !precipitates.some((p) => p.formula === 'CuS' || p.formula === 'Cu₂[Fe(CN)₆]')) {
         if ((prog.cuoh2_dec || 0) >= 0.55) {
           pushPr('CuO', 'чёрный осадок оксида меди(II) (продукт разложения Cu(OH)₂)', '#1c1917', 0.85);
         } else {
           pushPr('Cu(OH)₂', 'голубой студенистый осадок гидроксида меди(II)', '#38bdf8', 0.85);
         }
       }
-      if ((cations.Fe3 || 0) > 0.03) {
+      if ((cations.Fe3 || 0) > 0.03 && !precipitates.some((p) => p.formula === 'Fe₄[Fe(CN)₆]₃')) {
         pushPr('Fe(OH)₃', 'бурый осадок гидроксида железа(III)', '#92400e', 0.88);
       }
-      if ((cations.Fe2 || 0) > 0.03) {
+      if ((cations.Fe2 || 0) > 0.03 && !precipitates.some((p) => p.formula === 'Fe₃[Fe(CN)₆]₂')) {
         pushPr('Fe(OH)₂', 'серо-зелёный осадок гидроксида железа(II)', '#65a30d', 0.82);
       }
       if ((cations.Al || 0) > 0.03 && !complexes.alHydroxo) {
         pushPr('Al(OH)₃', 'белый студенистый амфотерный осадок гидроксида алюминия', '#f1f5f9', 0.82);
+      }
+      if ((cations.Cr || 0) > 0.03 && !complexes.crHydroxo) {
+        pushPr('Cr(OH)₃', 'серо-зелёный амфотерный осадок гидроксида хрома(III)', '#34d399', 0.84);
       }
       if ((cations.Zn || 0) > 0.03 && !complexes.znComplex) {
         pushPr('Zn(OH)₂', 'белый амфотерный осадок гидроксида цинка', '#f8fafc', 0.8);
@@ -478,6 +725,9 @@ export function analyzeChemistry(state) {
       if ((cations.Mg || 0) > 0.05 && pH >= 9.4) {
         pushPr('Mg(OH)₂', 'белый осадок гидроксида магния', '#f8fafc', 0.7);
       }
+      if ((amt.cac2 || 0) > 0 && (prog.cac2 || 0) > 0.35) {
+        pushPr('Ca(OH)₂', 'белая взвесь гашёной извести (гидролиз CaC₂)', '#f1f5f9', 0.75);
+      }
     }
 
     // Оксид меди(I) при нагревании глюкозы с Cu(OH)₂
@@ -486,14 +736,20 @@ export function analyzeChemistry(state) {
     }
   }
 
-  // Обугливание сахарозы конц. серной кислотой
+  // Обугливание сахарозы конц. серной кислотой и «химический вулкан» Cr₂O₃
   if ((prog.char_sugar || 0) >= 0.35) {
     pushPr('C', 'чёрная пористая масса угля (обугливание сахарозы)', '#18181b', 1.0);
   }
+  if ((prog.volcano || 0) >= 0.35) {
+    pushPr('Cr₂O₃', 'тёмно-зелёный рыхлый кратер оксида хрома(III) («вулкан»)', '#166534', 1.0);
+  }
 
-  // Сухое разложение малахита, медного купороса или нелетучие осадки после выкипания воды
+  // Сухое разложение малахита, перманганата, медного купороса или нелетучие осадки после выкипания воды
   if (!wet && ((prog.dry_malach || 0) >= 0.6 || (prog.cuoh2_dec || 0) >= 0.55)) {
     pushPr('CuO', 'чёрный порошок оксида меди(II)', '#1c1917', 0.9);
+  }
+  if (!wet && (prog.dry_kmno4 || 0) >= 0.5) {
+    pushPr('K₂MnO₄ + MnO₂', 'тёмный спек манганата калия и диоксида марганца', '#1f2937', 0.9);
   }
   if (!wet && (prog.cu2o || 0) >= 0.45) {
     pushPr('Cu₂O', 'кирпично-красный остаток оксида меди(I)', '#dc2626', 0.9);
@@ -518,9 +774,18 @@ export function analyzeChemistry(state) {
     } else if (complexes.feSCN) {
       chromophores.push(['#881337', 3.2]);
       liquidOpacity = 0.86;
+    } else if (complexes.fePhenol) {
+      chromophores.push(['#6d28d9', 2.8 * dyeFade]);
+      liquidOpacity = 0.80;
     } else if (complexes.biuret) {
       chromophores.push(['#7c3aed', 2.4 * dyeFade]);
       liquidOpacity = 0.75;
+    } else if (complexes.manganate) {
+      chromophores.push(['#059669', 2.9]);
+      liquidOpacity = 0.80;
+    } else if (complexes.crHydroxo) {
+      chromophores.push(['#047857', 2.4]);
+      liquidOpacity = 0.74;
     } else if (complexes.cuAmmonia) {
       chromophores.push(['#1d4ed8', 2.6]);
       liquidOpacity = 0.78;
@@ -537,12 +802,12 @@ export function analyzeChemistry(state) {
         chromophores.push(['#9333ea', anions.MnO4 * 3.2 * dil * dyeFade]);
         liquidOpacity = Math.max(liquidOpacity, 0.78);
       }
-      if ((anions.Cr2O7 || 0) > 0.01) {
-        const crCol = pH >= 7.8 ? '#facc15' : '#f97316';
+      if ((anions.Cr2O7 || 0) > 0.01 && !precipitates.some((p) => p.formula === 'BaCrO₄' || p.formula === 'PbCrO₄')) {
+        const crCol = pH >= 7.0 ? '#facc15' : '#f97316';
         chromophores.push([crCol, anions.Cr2O7 * 2.4 * dil]);
         liquidOpacity = Math.max(liquidOpacity, 0.72);
       }
-      if (cr3Green > 0.01) {
+      if (cr3Green > 0.01 && !precipitates.some((p) => p.formula === 'Cr(OH)₃')) {
         chromophores.push(['#059669', cr3Green * 2.2 * dil]);
         liquidOpacity = Math.max(liquidOpacity, 0.68);
       }
@@ -551,11 +816,11 @@ export function analyzeChemistry(state) {
         chromophores.push([cuCol, cations.Cu * 1.8 * dil]);
         liquidOpacity = Math.max(liquidOpacity, 0.58);
       }
-      if ((cations.Fe3 || 0) > 0.02 && !precipitates.some((p) => p.formula === 'Fe(OH)₃')) {
+      if ((cations.Fe3 || 0) > 0.02 && !precipitates.some((p) => p.formula === 'Fe(OH)₃' || p.formula === 'Fe₄[Fe(CN)₆]₃')) {
         chromophores.push(['#d97706', cations.Fe3 * 1.9 * dil]);
         liquidOpacity = Math.max(liquidOpacity, 0.6);
       }
-      if ((cations.Fe2 || 0) > 0.02 && !precipitates.some((p) => p.formula === 'Fe(OH)₂')) {
+      if ((cations.Fe2 || 0) > 0.02 && !precipitates.some((p) => p.formula === 'Fe(OH)₂' || p.formula === 'Fe₃[Fe(CN)₆]₂')) {
         chromophores.push(['#86efac', cations.Fe2 * 1.1 * dil]);
       }
       if ((cations.Ni || 0) > 0.02 && !precipitates.some((p) => p.formula === 'Ni(OH)₂')) {
@@ -564,9 +829,19 @@ export function analyzeChemistry(state) {
       if ((cations.Co || 0) > 0.02 && !precipitates.some((p) => p.formula === 'Co(OH)₂')) {
         chromophores.push(['#f472b6', cations.Co * 1.6 * dil]);
       }
+      if ((anions.FeCN6_4 || 0) > 0.02 && precipitates.length === 0) {
+        chromophores.push(['#fef08a', anions.FeCN6_4 * 1.2 * dil]);
+      }
+      if ((anions.FeCN6_3 || 0) > 0.02 && precipitates.length === 0) {
+        chromophores.push(['#fb923c', anions.FeCN6_3 * 1.6 * dil]);
+      }
       if (freeIodine > 0.015) {
         chromophores.push(['#b45309', freeIodine * 2.2 * dil * dyeFade]);
         liquidOpacity = Math.max(liquidOpacity, 0.65);
+      }
+      if (freeBromine > 0.015) {
+        chromophores.push(['#ea580c', freeBromine * 2.4 * dil * dyeFade]);
+        liquidOpacity = Math.max(liquidOpacity, 0.66);
       }
     }
 
@@ -610,8 +885,26 @@ export function analyzeChemistry(state) {
   // 10. Запахи и предупреждения ТБ
   const smells = [];
   const addSmell = (s) => { if (s && !smells.includes(s)) smells.push(s); };
+  if ((prog.ester || 0) >= 0.45) {
+    addSmell('приятный фруктово-грушевый аромат этилацетата (сложного эфира)');
+  }
+  if ((prog.cuo_eth || 0) >= 0.4 || ((amt.ethanol || 0) > 0 && redox.cr2o7Reduced)) {
+    addSmell('характерный запах зелёного яблока (уксусного альдегида CH₃CHO)');
+  }
+  if ((amt.ch3coona || 0) > 0 && pH !== null && pH < 4.2) {
+    addSmell('характерный запах вытесненной уксусной кислоты CH₃COOH');
+  }
+  if ((prog.thiosulf_s || 0) > 0.2) {
+    addSmell(GAS_INFO.SO2.smell);
+  }
+  if ((amt.cac2 || 0) > 0 && wet) {
+    addSmell(GAS_INFO.C2H2.smell);
+  }
   for (const [id, q] of Object.entries(amt)) {
-    if (q > 0 && REAGENTS[id]?.smell) addSmell(REAGENTS[id].smell);
+    if (q > 0 && REAGENTS[id]?.smell) {
+      if (id === 'br2' && freeBromine <= 0.01) continue;
+      addSmell(REAGENTS[id].smell);
+    }
   }
   if (state.headspace?.gas && GAS_INFO[state.headspace.gas]?.smell && state.headspace.amount > 0.1) {
     addSmell(GAS_INFO[state.headspace.gas].smell);
@@ -623,8 +916,9 @@ export function analyzeChemistry(state) {
 
   const warnings = [];
   if (concH2SO4 || concHNO3) warnings.push('Работа с концентрированными кислотами: защитные очки и перчатки обязательны');
-  if (state.headspace?.gas === 'NO2' || state.headspace?.gas === 'Cl2') warnings.push('Токсичный газ в сосуде — опыт проводят в вытяжном шкафу');
+  if (state.headspace?.gas === 'NO2' || state.headspace?.gas === 'Cl2' || freeBromine > 0.02) warnings.push('Токсичные пары галогена / оксидов азота — работать в вытяжном шкафу');
   if ((amt.k || 0) > 0 || (amt.na || 0) > 0) warnings.push('Щелочной металл: беречь от попадания брызг, работать за экраном');
+  if ((amt.phenol || 0) > 0) warnings.push('Фенол ядовит и вызывает ожоги кожи — работать в перчатках');
 
   // 11. Катионы для окрашивания пламени (нихромовая петля)
   const flameCations = Object.keys(FLAME_COLORS).filter((c) => (cations[c] || 0) > 0.03);
@@ -643,7 +937,9 @@ export function analyzeChemistry(state) {
     precipitates,
     complexes,
     redox,
+    coHydrolysis,
     displacedCu,
+    displacedAg,
     liquidColor,
     liquidOpacity,
     smells,
@@ -699,7 +995,10 @@ export function stepSimulation(state, dt, speedX = 1) {
     state.seen.gases[formula] = true;
   };
 
-  // 2. Реакции металлов с водой, кислотами, щелочами и солями меди
+  let volcanoErupting = false;
+  let goldenRainSparkle = false;
+
+  // 2. Реакции металлов и твёрдых веществ с водой, кислотами, щелочами и солями
   for (const [id, q] of Object.entries(amt)) {
     if (q <= 0) continue;
     const r = REAGENTS[id];
@@ -714,8 +1013,16 @@ export function stepSimulation(state, dt, speedX = 1) {
       state.temp = Math.min(100, state.temp + (rate * q * 180) / heatCap);
     }
 
-    // 2б. Металлы с кислотами
-    if (r.cat === 'met' && !r.waterRate && wet && p < 1) {
+    // 2а-2. Гидролиз карбида кальция CaC₂ + 2H₂O → Ca(OH)₂ + C₂H₂↑
+    if (r.carbide && wet && p < 1) {
+      const rate = 0.085 * (1.1 - 0.35 * p) * effDt * 2.4;
+      prog[id] = Math.min(1, p + rate);
+      emitGas('C2H2', rate * q * 34);
+      state.temp = Math.min(100, state.temp + (rate * q * 95) / heatCap);
+    }
+
+    // 2б. Металлы с кислотами и солями
+    if ((r.category || r.cat) === 'met' && !r.waterRate && wet && p < 1) {
       const hasOxAcid = (amt.hno3 || 0) + (amt.hno3k || 0) > 0 || analysis.concH2SO4;
       if (hasOxAcid) {
         // Пассивация Fe и Al в холодной конц. кислоте
@@ -733,10 +1040,16 @@ export function stepSimulation(state, dt, speedX = 1) {
         }
       } else if (r.acidRate && analysis.netEq < -0.04) {
         const baseR = state.temp > 50 && r.acidRateHot ? r.acidRateHot : r.acidRate;
+        // Гальваническая пара Zn–Cu при добавлении капель соли меди(II) ускоряет выделение H₂ в 2.6 раза!
+        const galvanicBoost = (id === 'zn' && ((amt.cuso4 || 0) > 0 || (amt.cucl2 || 0) > 0 || state.coatings.copperPlated > 0.1)) ? 2.6 : 1.0;
         const acidStrength = Math.min(1.6, (-analysis.netEq) * 1.2);
-        const rate = baseR * acidStrength * tempFactor * effDt * 2.4;
+        const rate = baseR * galvanicBoost * acidStrength * tempFactor * effDt * 2.4;
         prog[id] = Math.min(1, p + rate);
         emitGas('H2', rate * q * 26);
+        if (galvanicBoost > 1.5 && !state.seen.galvanicZnCu) {
+          state.seen.galvanicZnCu = true;
+          events.push('Гальваническая пара Zn–Cu резко ускорила выделение водорода H₂↑');
+        }
         if (r.exoAcid) {
           state.temp = Math.min(100, state.temp + (rate * q * r.exoAcid) / heatCap);
         }
@@ -761,6 +1074,18 @@ export function stepSimulation(state, dt, speedX = 1) {
           events.push('На поверхности металла выделился красно-медный налёт Cu');
         }
       }
+
+      // 2г-2. Цементация серебра (Cu, Fe, Zn, Mg + AgNO₃ → блестящие дендриты серебра Ag⁰↓)
+      const pAg = prog[id + ':ag'] || 0;
+      if (r.act > 1.2 && r.act < 8 && (analysis.cations.Ag || 0) > 0.04 && pAg < 1) {
+        const rate = 0.055 * tempFactor * effDt;
+        prog[id + ':ag'] = Math.min(1, pAg + rate);
+        state.coatings.silverPlated = Math.min(1, prog[id + ':ag']);
+        if (prog[id + ':ag'] > 0.25 && !state.seen.displacedAg) {
+          state.seen.displacedAg = true;
+          events.push('Цементация серебра: металл покрылся пушистыми серебристыми кристаллами Ag⁰');
+        }
+      }
     }
 
     // 2д. Мрамор и малахит в кислоте → CO₂
@@ -779,18 +1104,95 @@ export function stepSimulation(state, dt, speedX = 1) {
     }
   }
 
-  // 3. Газообразование в растворах (карбонаты/сульфиты/сульфиды + кислота; H₂O₂ + MnO₂; NH₄⁺ + OH⁻ + t°)
+  // 3. Газообразование и кинетические процессы в растворах
   if (wet) {
-    // Быстрое вскипание растворённых карбонатов/гидрокарбонатов с кислотой
+    // Быстрое вскипание растворённых карбонатов/гидрокарбонатов/сульфитов/сульфидов с любой кислотой
+    const hasAnyAcid = Object.entries(amt).some(([k, v]) => v > 0 && REAGENTS[k]?.acid);
     for (const cid of ['na2co3', 'nahco3', 'na2so3', 'na2s']) {
-      if ((amt[cid] || 0) > 0 && (amt.hcl || amt.h2so4 || amt.h2so4k || amt.hno3 || amt.hno3k || amt.ch3cooh || amt.h3po4)) {
+      if ((amt[cid] || 0) > 0 && hasAnyAcid) {
         const key = cid + ':gas';
         const gp = prog[key] || 0;
-        const hasTotalAcid = Object.entries(amt).some(([k, v]) => v > 0 && REAGENTS[k]?.acid);
-        if (hasTotalAcid && gp < 1) {
+        if (gp < 1) {
           const rate = 0.22 * effDt * 2.0;
           prog[key] = Math.min(1, gp + rate);
           emitGas(REAGENTS[cid].gasAnion, rate * (amt[cid] / 5) * 18);
+        }
+      }
+    }
+
+    // Совместный гидролиз солей Al³⁺, Fe³⁺, Cr³⁺ с содой/сульфитом/сульфидом → осадок Me(OH)₃↓ + бурный газ!
+    if (analysis.coHydrolysis && (prog.co_hyd_gas || 0) < 1) {
+      const rate = 0.2 * effDt * 1.9;
+      prog.co_hyd_gas = Math.min(1, (prog.co_hyd_gas || 0) + rate);
+      const hydGas = (amt.na2s || 0) > 0 ? 'H2S' : ((amt.na2so3 || 0) > 0 ? 'SO2' : 'CO2');
+      emitGas(hydGas, rate * 24);
+      if (prog.co_hyd_gas >= 0.3 && !state.seen.coHydrolysis) {
+        state.seen.coHydrolysis = true;
+        events.push(`Совместный гидролиз: выпал студенистый гидроксид и вскипел газ ${GAS_INFO[hydGas]?.formula || hydGas}↑`);
+      }
+    }
+
+    // Тиосульфат натрия + кислота → муть коллоидной серы S↓ + сернистый газ SO₂↑
+    if ((amt.na2s2o3 || 0) > 0 && hasAnyAcid && analysis.netEq < -0.02 && (prog.thiosulf_s || 0) < 1) {
+      const rate = 0.095 * tempFactor * effDt * 1.5;
+      prog.thiosulf_s = Math.min(1, (prog.thiosulf_s || 0) + rate);
+      emitGas('SO2', rate * 18);
+      if (prog.thiosulf_s >= 0.35 && !state.seen.precipitates['S(колл.)']) {
+        state.seen.precipitates['S(колл.)'] = true;
+        events.push('Раствор тиосульфата помутнел: выделилась коллоидная сера S↓ и запах SO₂');
+      }
+    }
+
+    // Нитрит натрия + сильная кислота → распад HNO₂ с выделением бурого газа NO₂ над раствором
+    if ((amt.nano2 || 0) > 0 && hasAnyAcid && analysis.netEq < -0.03 && (prog.no2_dec || 0) < 1) {
+      const rate = 0.14 * tempFactor * effDt;
+      prog.no2_dec = Math.min(1, (prog.no2_dec || 0) + rate);
+      emitGas('NO2', rate * 16);
+      state.headspace = { gas: 'NO2', amount: Math.min(1, (state.headspace.amount || 0) + rate * 2.2) };
+    }
+
+    // Окисление муравьиной кислоты HCOOH или H₂O₂ подкисленным перманганатом → бурное выделение CO₂↑ / O₂↑
+    if (((amt.kmno4 || 0) > 0 || (amt.kmno4s || 0) > 0) && analysis.netEq < -0.03) {
+      if ((amt.h2o2 || 0) > 0 && (prog.mno4_h2o2 || 0) < 1) {
+        const rate = 0.16 * effDt * 1.8;
+        prog.mno4_h2o2 = Math.min(1, (prog.mno4_h2o2 || 0) + rate);
+        emitGas('O2', rate * 24);
+      }
+      if ((amt.hcooh || 0) > 0 && state.temp >= 35 && (prog.mno4_hcooh || 0) < 1) {
+        const rate = 0.12 * tempFactor * effDt;
+        prog.mno4_hcooh = Math.min(1, (prog.mno4_hcooh || 0) + rate);
+        emitGas('CO2', rate * 20);
+      }
+    }
+
+    // Помутнение известковой воды Ca(OH)₂ при пропускании CO₂ и последующее просветление в избытке CO₂!
+    if ((amt.caoh2 || 0) > 0 && activeGases.includes('CO2') && (prog.lime_co2 || 0) < 1) {
+      prog.lime_co2 = Math.min(1, (prog.lime_co2 || 0) + 0.12 * effDt);
+      if (prog.lime_co2 >= 0.25 && !state.seen.limeTurbid) {
+        state.seen.limeTurbid = true;
+        events.push('Известковая вода помутнела от CO₂ — выпал осадок CaCO₃↓');
+      } else if (prog.lime_co2 >= 0.9 && !state.seen.limeCleared) {
+        state.seen.limeCleared = true;
+        events.push('В избытке CO₂ осадок CaCO₃ растворился с переходом в гидрокарбонат Ca(HCO₃)₂');
+      }
+    }
+
+    // Фиксация щелочного манганата («химический хамелеон»)
+    if (analysis.complexes.manganate && !state.seen.manganate) {
+      state.seen.manganate = true;
+      events.push('«Химический хамелеон»: раствор приобрёл изумрудно-зелёную окраску манганат-иона MnO₄²⁻');
+    }
+
+    // Перекристаллизация «золотого дождя» PbI₂: растворение при t ≥ 78 °C и искрящийся листопад при остывании!
+    if ((analysis.cations.Pb || 0) > 0.02 && (analysis.anions.I || 0) > 0.02) {
+      if (state.temp >= 78 && !state.seen.hotPbI2) {
+        state.seen.hotPbI2 = true;
+        events.push('В горячей воде жёлтый осадок PbI₂ полностью растворился — охладите сосуд для «золотого дождя»!');
+      } else if (state.seen.hotPbI2 && state.temp < 72) {
+        goldenRainSparkle = true;
+        if (!state.seen.goldenRainRecryst) {
+          state.seen.goldenRainRecryst = true;
+          events.push('Кристаллизация «золотого дождя»: в остывающем растворе кружатся крупные золотые чешуйки PbI₂!');
         }
       }
     }
@@ -821,11 +1223,12 @@ export function stepSimulation(state, dt, speedX = 1) {
       }
     }
 
-    // Реакция «серебряного зеркала» ([Ag(NH₃)₂]⁺ + глюкоза при t ≥ 50 °C)
-    if (analysis.complexes.agAmmonia && (amt.glucose || 0) > 0 && state.temp >= 50 && (prog.ag_mirror || 0) < 1) {
+    // Реакция «серебряного зеркала» ([Ag(NH₃)₂]⁺ + глюкоза ИЛИ муравьиная кислота HCOOH при t ≥ 50 °C)
+    if (analysis.complexes.agAmmonia && ((amt.glucose || 0) > 0 || (amt.hcooh || 0) > 0) && state.temp >= 50 && (prog.ag_mirror || 0) < 1) {
       const rate = 0.075 * effDt * (1 + (state.temp - 50) / 25);
       prog.ag_mirror = Math.min(1, (prog.ag_mirror || 0) + rate);
       state.coatings.silverMirror = prog.ag_mirror;
+      if ((amt.hcooh || 0) > 0) emitGas('CO2', rate * 10);
       if (prog.ag_mirror >= 0.55 && !state.seen.mirror) {
         state.seen.mirror = true;
         events.push('Стенки сосуда покрылись блестящим налётом металлического серебра («серебряное зеркало»)');
@@ -838,6 +1241,42 @@ export function stepSimulation(state, dt, speedX = 1) {
       if (prog.cu2o >= 0.5 && !state.seen.precipitates['Cu₂O']) {
         state.seen.precipitates['Cu₂O'] = true;
         events.push('Синий раствор сменился жёлтым, а затем кирпично-красным осадком Cu₂O↓');
+      }
+    }
+
+    // Окисление этанола чёрным оксидом меди(II) при нагревании → розовая медь Cu + запах уксусного альдегида!
+    if ((amt.ethanol || 0) > 0 && (amt.cuo || 0) > 0 && state.temp >= 58 && (prog.cuo_eth || 0) < 1) {
+      prog.cuo_eth = Math.min(1, (prog.cuo_eth || 0) + 0.08 * effDt * (1 + (state.temp - 55) / 30));
+      state.coatings.copperPlated = Math.max(state.coatings.copperPlated || 0, prog.cuo_eth);
+      if (prog.cuo_eth >= 0.5 && !state.seen.cuoEthanol) {
+        state.seen.cuoEthanol = true;
+        events.push('Чёрный порошок CuO восстановился этанолом до розовой меди Cu; появился яблочный запах альдегида CH₃CHO');
+      }
+    }
+
+    // Реакция этерификации: этанол + уксусная кислота + конц. H₂SO₄ + нагрев → фруктовый аромат этилацетата!
+    if ((amt.ethanol || 0) > 0 && (amt.ch3cooh || 0) > 0 && (amt.h2so4k || 0) > 0 && state.temp >= 58 && (prog.ester || 0) < 1) {
+      prog.ester = Math.min(1, (prog.ester || 0) + 0.085 * effDt * (1 + (state.temp - 55) / 30));
+      if (prog.ester >= 0.5 && !state.seen.ester) {
+        state.seen.ester = true;
+        events.push('Реакция этерификации: синтезирован этилацетат с приятным фруктово-грушевым ароматом!');
+      }
+    }
+
+    // Ксантопротеиновая реакция белка с азотной кислотой и тепловая денатурация белка
+    if ((amt.protein || 0) > 0) {
+      if (((amt.hno3 || 0) > 0 || (amt.hno3k || 0) > 0) && (analysis.concHNO3 || state.temp >= 45) && (prog.xantho || 0) < 1) {
+        prog.xantho = Math.min(1, (prog.xantho || 0) + 0.12 * effDt * tempFactor);
+        if (prog.xantho >= 0.45 && !state.seen.xantho) {
+          state.seen.xantho = true;
+          events.push('Ксантопротеиновая реакция: белок свернулся в ярко-жёлтый сгусток (нитрование бензольных колец)');
+        }
+      } else if (state.temp >= 80 && (prog.prot_denat || 0) < 1) {
+        prog.prot_denat = Math.min(1, (prog.prot_denat || 0) + 0.1 * effDt);
+        if (prog.prot_denat >= 0.5 && !state.seen.protDenat) {
+          state.seen.protDenat = true;
+          events.push('Тепловая денатурация: при нагревании раствор белка свернулся белыми хлопьями');
+        }
       }
     }
   }
@@ -854,8 +1293,31 @@ export function stepSimulation(state, dt, speedX = 1) {
     }
   }
 
-  // 5. Сухой нагрев кристаллов (малахит, медный купорос, возгонка NH₄Cl)
+  // 5. Сухой нагрев кристаллов («химический вулкан», KMnO₄, малахит, медный купорос, возгонка NH₄Cl)
+  // Самоподдерживающийся экзотермический «вулкан» дихромата аммония (после запуска при 155 °C идёт сам!)
+  if (!wet && (amt.nh4cr2o7 || 0) > 0 && (state.temp >= 155 || (prog.volcano || 0) > 0.03) && (prog.volcano || 0) < 1) {
+    const rate = 0.11 * effDt * 1.6;
+    prog.volcano = Math.min(1, (prog.volcano || 0) + rate);
+    state.coatings.volcanoAsh = prog.volcano;
+    state.temp = Math.min(420, state.temp + 38 * effDt);
+    volcanoErupting = true;
+    emitGas('N2', 28 * effDt);
+    if (prog.volcano >= 0.25 && !state.seen.volcano) {
+      state.seen.volcano = true;
+      events.push('«Химический вулкан»! Оранжевый (NH₄)₂Cr₂O₇ бурно разлагается со снопом искр, азотом N₂↑ и зелёным пеплом Cr₂O₃');
+    }
+  }
+
   if (!wet && state.temp > 105) {
+    // Термическое разложение сухого перманганата калия: 2KMnO₄ → K₂MnO₄ + MnO₂ + O₂↑
+    if ((amt.kmno4s || 0) > 0 && state.temp >= 195 && (prog.dry_kmno4 || 0) < 1) {
+      prog.dry_kmno4 = Math.min(1, (prog.dry_kmno4 || 0) + 0.095 * effDt);
+      emitGas('O2', 22 * effDt);
+      if (prog.dry_kmno4 >= 0.5 && !state.seen.dryKmno4) {
+        state.seen.dryKmno4 = true;
+        events.push('Разложение KMnO₄: выделяется чистый кислород O₂↑, на дне остаётся спек K₂MnO₄ и MnO₂');
+      }
+    }
     if ((amt.malach || 0) > 0 && state.temp >= 145 && (prog.dry_malach || 0) < 1) {
       prog.dry_malach = Math.min(1, (prog.dry_malach || 0) + 0.075 * effDt);
       emitGas('CO2', 12 * effDt);
@@ -928,6 +1390,8 @@ export function stepSimulation(state, dt, speedX = 1) {
     activeGases,
     gasRate,
     boiling,
+    volcanoErupting,
+    goldenRainSparkle,
     analysis: postAnalysis
   };
 }

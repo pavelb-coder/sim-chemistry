@@ -5,9 +5,11 @@ const ION_LABELS = {
   Na: ['Na⁺', '#fbbf24'],
   K:  ['K⁺',  '#c084fc'],
   Ca: ['Ca²⁺', '#fb923c'],
+  Sr: ['Sr²⁺', '#e11d48'],
   Ba: ['Ba²⁺', '#a3e635'],
   Mg: ['Mg²⁺', '#94a3b8'],
   Al: ['Al³⁺', '#cbd5e1'],
+  Cr: ['Cr³⁺', '#10b981'],
   Zn: ['Zn²⁺', '#94a3b8'],
   Fe2:['Fe²⁺', '#4ade80'],
   Fe3:['Fe³⁺', '#f59e0b'],
@@ -23,15 +25,20 @@ const ION_LABELS = {
   I:  ['I⁻',   '#f59e0b'],
   SO4:['SO₄²⁻','#60a5fa'],
   NO3:['NO₃⁻', '#818cf8'],
+  NO2:['NO₂⁻', '#60a5fa'],
   PO4:['PO₄³⁻','#a78bfa'],
   CO3:['CO₃²⁻','#34d399'],
   HCO3:['HCO₃⁻','#5eead4'],
   SO3:['SO₃²⁻','#fcd34d'],
+  S2O3:['S₂O₃²⁻','#fbbf24'],
   S:  ['S²⁻',  '#fde047'],
   SiO3:['SiO₃²⁻','#cbd5e1'],
   SCN:['SCN⁻', '#f87171'],
+  FeCN6_4:['[Fe(CN)₆]⁴⁻','#fde047'],
+  FeCN6_3:['[Fe(CN)₆]³⁻','#fb923c'],
   MnO4:['MnO₄⁻','#a855f7'],
   Cr2O7:['Cr₂O₇²⁻','#fb923c'],
+  HCOO:['HCOO⁻','#cbd5e1'],
   Ac: ['CH₃COO⁻','#d6d3d1']
 };
 
@@ -40,6 +47,29 @@ export function describeMicroState(state, analysis) {
   const wet = analysis.wet;
 
   if (!wet) {
+    if ((amt.nh4cr2o7 || 0) > 0 && ((state.prog.volcano || 0) > 0.05 || state.temp >= 155)) {
+      return {
+        title: 'Внутримолекулярная ОВР: «Химический вулкан»',
+        equation: '(NH₄)₂Cr₂O₇ →(t°) Cr₂O₃ + N₂↑ + 4H₂O↑  + Q',
+        caption: 'Катион NH₄⁺ (восстановитель, N⁻³) окисляется дихромат-ионом Cr₂O₇²⁻ (Cr⁺⁶) до молекулярного азота N₂⁰ и рыхлого зелёного оксида Cr₂O₃.',
+        mode: 'sublime',
+        species: [
+          { label: 'N₂', color: '#93c5fd', count: 9, gas: true },
+          { label: 'H₂O', color: '#e0f2fe', count: 6, gas: true }
+        ],
+        lattice: { label: 'Cr₂O₃', color: '#166534' }
+      };
+    }
+    if ((amt.kmno4s || 0) > 0 && state.temp >= 190) {
+      return {
+        title: 'Термическое разложение перманганата калия',
+        equation: '2KMnO₄ →(t°) K₂MnO₄ + MnO₂ + O₂↑',
+        caption: 'При нагревании кристаллы отщепляют чистый кислород O₂, превращаясь в смесь манганата калия (+6) и диоксида марганца (+4).',
+        mode: 'sublime',
+        species: [{ label: 'O₂', color: '#60a5fa', count: 10, gas: true }],
+        lattice: { label: 'K₂MnO₄·MnO₂', color: '#374151' }
+      };
+    }
     if ((amt.nh4cls || 0) > 0 && state.temp > 165) {
       return {
         title: 'Термическая диссоциация (возгонка) NH₄Cl',
@@ -87,6 +117,36 @@ export function describeMicroState(state, analysis) {
   }
 
   // Жидкая фаза
+  if ((amt.cac2 || 0) > 0 && (state.prog.cac2 || 0) < 0.99) {
+    return {
+      title: 'Гидролиз карбида кальция (получение ацетилена)',
+      equation: 'CaC₂ + 2H₂O → Ca(OH)₂↓ + HC≡CH↑',
+      caption: 'Ацетилид-ионы C₂²⁻ необратимо протонируются молекулами воды с выделением пузырьков ацетилена C₂H₂ и щелочной взвеси Ca(OH)₂.',
+      mode: 'metal_gas',
+      lattice: { label: 'CaC₂', color: '#57534e' },
+      species: [
+        { label: 'C₂H₂', color: '#fb923c', count: 7, gas: true },
+        { label: 'Ca²⁺', color: '#fb923c', count: 5 },
+        { label: 'OH⁻', color: '#38bdf8', count: 6 }
+      ]
+    };
+  }
+
+  if (analysis.displacedAg) {
+    return {
+      title: 'Цементация металлического серебра',
+      equation: 'Cu⁰ + 2Ag⁺ → Cu²⁺ + 2Ag⁰↓',
+      caption: 'Атомы меди передают электроны катионам серебра: на поверхности растут блестящие дендриты Ag⁰, а раствор голубеет от ионов Cu²⁺.',
+      mode: 'displacement',
+      lattice: { label: 'Cu⁰ / Ag⁰', color: '#f8fafc' },
+      species: [
+        { label: 'Ag⁺', color: '#e2e8f0', count: 4 },
+        { label: 'Cu²⁺', color: '#38bdf8', count: 6 },
+        { label: 'NO₃⁻', color: '#818cf8', count: 6 }
+      ]
+    };
+  }
+
   if (analysis.displacedCu) {
     return {
       title: 'Контактное вытеснение меди металлом',
@@ -102,23 +162,51 @@ export function describeMicroState(state, analysis) {
     };
   }
 
-  if (state.coatings.silverMirror > 0.1 || (analysis.complexes.agAmmonia && (amt.glucose || 0) > 0 && state.temp >= 50)) {
+  if ((state.prog.ester || 0) >= 0.35) {
+    return {
+      title: 'Реакция этерификации (синтез этилацетата)',
+      equation: 'CH₃COOH + C₂H₅OH ⇄(H₂SO₄, t°) CH₃COOC₂H₅ + H₂O',
+      caption: 'Концентрированная H₂SO₄ протонирует карбоксильную группу и связывает воду, смещая равновесие в сторону летучего фруктового эфира.',
+      mode: 'solution',
+      species: [
+        { label: 'CH₃COOC₂H₅', color: '#fbbf24', count: 8 },
+        { label: 'C₂H₅OH', color: '#93c5fd', count: 4 },
+        { label: 'H₃O⁺', color: '#ef4444', count: 4 }
+      ]
+    };
+  }
+
+  if ((state.prog.cuo_eth || 0) >= 0.35) {
+    return {
+      title: 'Окисление первичного спирта оксидом меди(II)',
+      equation: 'C₂H₅OH + CuO →(t°) CH₃CHO + Cu⁰↓ + H₂O',
+      caption: 'Чёрный оксид меди(II) восстанавливается этанолом до розовой металлической меди с образованием уксусного альдегида.',
+      mode: 'displacement',
+      lattice: { label: 'Cu⁰', color: '#c8753c' },
+      species: [
+        { label: 'CH₃CHO', color: '#34d399', count: 7 },
+        { label: 'C₂H₅OH', color: '#93c5fd', count: 5 }
+      ]
+    };
+  }
+
+  if (state.coatings.silverMirror > 0.1 || (analysis.complexes.agAmmonia && ((amt.glucose || 0) > 0 || (amt.hcooh || 0) > 0) && state.temp >= 50)) {
     return {
       title: 'Реакция «серебряного зеркала»',
       equation: 'R–CHO + 2[Ag(NH₃)₂]⁺ + 2OH⁻ → R–COO⁻ + 2Ag⁰↓ + 4NH₃ + H₂O',
-      caption: 'Альдегидная группа глюкозы восстанавливает комплексные ионы серебра до атомов Ag⁰, формирующих зеркальную плёнку на стекле.',
+      caption: 'Альдегидная группа глюкозы или муравьиной кислоты восстанавливает аммиачный комплекс серебра до зеркальной плёнки Ag⁰.',
       mode: 'solution',
       species: [
         { label: '[Ag(NH₃)₂]⁺', color: '#e2e8f0', count: 5 },
         { label: 'Ag⁰', color: '#f8fafc', count: 7 },
-        { label: 'C₆H₁₂O₆', color: '#fbbf24', count: 4 }
+        { label: (amt.hcooh || 0) > 0 ? 'HCOOH' : 'C₆H₁₂O₆', color: '#fbbf24', count: 4 }
       ]
     };
   }
 
   // Растворение металла с выделением H₂
   const activeMetal = Object.keys(amt).find(
-    (k) => amt[k] > 0 && REAGENTS[k]?.cat === 'met' && (state.prog[k] || 0) > 0 && (state.prog[k] || 0) < 1
+    (k) => amt[k] > 0 && (REAGENTS[k]?.category || REAGENTS[k]?.cat) === 'met' && (state.prog[k] || 0) > 0 && (state.prog[k] || 0) < 1
   );
   if (activeMetal) {
     const r = REAGENTS[activeMetal];
@@ -180,6 +268,55 @@ export function describeMicroState(state, analysis) {
       ]
     };
   }
+  if (analysis.complexes.fePhenol) {
+    return {
+      title: 'Качественная реакция на фенол с FeCl₃',
+      equation: '6C₆H₅OH + Fe³⁺ ⇄ [Fe(OC₆H₅)₆]³⁻ + 6H⁺ (фиолетовый)',
+      caption: 'Фенолят-лиганды образуют с катионом железа(III) интенсивно окрашенный фиолетовый комплекс.',
+      mode: 'solution',
+      species: [
+        { label: '[Fe(OC₆H₅)₆]³⁻', color: '#7c3aed', count: 8 },
+        { label: 'C₆H₅OH', color: '#f472b6', count: 4 }
+      ]
+    };
+  }
+  if (analysis.complexes.manganate) {
+    return {
+      title: '«Химический хамелеон» — манганат-ион в щёлочи',
+      equation: '2MnO₄⁻ + SO₃²⁻ + 2OH⁻ → 2MnO₄²⁻(зел.) + SO₄²⁻ + H₂O',
+      caption: 'В сильнощелочной среде фиолетовый MnO₄⁻ (+7) принимает всего 1 электрон, переходя в устойчивый изумрудно-зелёный манганат MnO₄²⁻ (+6).',
+      mode: 'solution',
+      species: [
+        { label: 'MnO₄²⁻', color: '#059669', count: 9 },
+        { label: 'OH⁻', color: '#38bdf8', count: 6 },
+        { label: 'K⁺', color: '#c084fc', count: 5 }
+      ]
+    };
+  }
+  if (analysis.complexes.agThiosulfate) {
+    return {
+      title: 'Фиксажный комплекс тиосульфата серебра',
+      equation: 'AgCl↓ + 2S₂O₃²⁻ → [Ag(S₂O₃)₂]³⁻ + Cl⁻',
+      caption: 'Прочный дитиосульфатоаргентат-комплекс переводит галогенид серебра в прозрачный раствор (классический процесс фотографического фиксирования).',
+      mode: 'solution',
+      species: [
+        { label: '[Ag(S₂O₃)₂]³⁻', color: '#bae6fd', count: 8 },
+        { label: 'Na⁺', color: '#fbbf24', count: 6 }
+      ]
+    };
+  }
+  if (analysis.complexes.crHydroxo) {
+    return {
+      title: 'Амфотерный гидроксокомплекс хрома(III)',
+      equation: 'Cr(OH)₃↓ + 3OH⁻ → [Cr(OH)₆]³⁻ (изумрудный)',
+      caption: 'Серо-зелёный осадок Cr(OH)₃ растворяется в избытке концентрированной щёлочи с образованием гексагидроксохромата(III).',
+      mode: 'solution',
+      species: [
+        { label: '[Cr(OH)₆]³⁻', color: '#059669', count: 8 },
+        { label: 'Na⁺', color: '#fbbf24', count: 7 }
+      ]
+    };
+  }
   if (analysis.complexes.starchIodine) {
     return {
       title: 'Клатратный комплекс иода с амилозой крахмала',
@@ -193,6 +330,22 @@ export function describeMicroState(state, analysis) {
     };
   }
 
+  if (analysis.coHydrolysis && analysis.precipitates.length > 0) {
+    const pr = analysis.precipitates[0];
+    return {
+      title: 'Необратимый совместный (взаимный) гидролиз',
+      equation: `2${pr.formula.replace('(OH)₃', '³⁺')} + 3CO₃²⁻ + 3H₂O → 2${pr.formula}↓ + 3CO₂↑`,
+      caption: 'Гидролиз катиона по кислотному типу и аниона по основному взаимно усиливают друг друга до полного распада на осадок гидроксида и газ.',
+      mode: 'precipitate',
+      precip: pr,
+      species: [
+        { label: 'CO₂', color: '#94a3b8', count: 6, gas: true },
+        { label: 'Na⁺', color: '#fbbf24', count: 5 },
+        { label: 'Cl⁻', color: '#4ade80', count: 5 }
+      ]
+    };
+  }
+
   // Осадки
   if (analysis.precipitates.length > 0) {
     const pr = analysis.precipitates[0];
@@ -201,10 +354,22 @@ export function describeMicroState(state, analysis) {
       'AgBr': 'Ag⁺ + Br⁻ → AgBr↓',
       'AgI': 'Ag⁺ + I⁻ → AgI↓',
       'BaSO₄': 'Ba²⁺ + SO₄²⁻ → BaSO₄↓',
-      'PbI₂': 'Pb²⁺ + 2I⁻ → PbI₂↓',
+      'SrSO₄': 'Sr²⁺ + SO₄²⁻ → SrSO₄↓',
+      'BaCrO₄': 'Ba²⁺ + CrO₄²⁻ → BaCrO₄↓',
+      'PbCrO₄': 'Pb²⁺ + CrO₄²⁻ → PbCrO₄↓',
+      'Ag₂CrO₄': '2Ag⁺ + CrO₄²⁻ → Ag₂CrO₄↓ (кирпично-красный)',
+      'Fe₄[Fe(CN)₆]₃': '4Fe³⁺ + 3[Fe(CN)₆]⁴⁻ → Fe₄[Fe(CN)₆]₃↓ («берлинская лазурь»)',
+      'Fe₃[Fe(CN)₆]₂': '3Fe²⁺ + 2[Fe(CN)₆]³⁻ → Fe₃[Fe(CN)₆]₂↓ («турнбулева синь»)',
+      'Cu₂[Fe(CN)₆]': '2Cu²⁺ + [Fe(CN)₆]⁴⁻ → Cu₂[Fe(CN)₆]↓',
+      'PbI₂': 'Pb²⁺ + 2I⁻ ⇄ PbI₂↓ («золотой дождь»)',
+      'CuI': '2Cu²⁺ + 4I⁻ → 2CuI↓ + I₂',
+      'S(колл.)': 'S₂O₃²⁻ + 2H⁺ → S↓ + SO₂↑ + H₂O',
+      'MnO₂': '2MnO₄⁻ + 3SO₃²⁻ + H₂O → 2MnO₂↓ + 3SO₄²⁻ + 2OH⁻',
+      'C₆H₂Br₃OH': 'C₆H₅OH + 3Br₂ → C₆H₂Br₃OH↓ + 3HBr',
       'Cu(OH)₂': 'Cu²⁺ + 2OH⁻ → Cu(OH)₂↓',
       'CuO': 'Cu(OH)₂ →(t°) CuO↓ + H₂O',
       'Al(OH)₃': 'Al³⁺ + 3OH⁻ → Al(OH)₃↓',
+      'Cr(OH)₃': 'Cr³⁺ + 3OH⁻ → Cr(OH)₃↓',
       'Fe(OH)₃': 'Fe³⁺ + 3OH⁻ → Fe(OH)₃↓',
       'Fe(OH)₂': 'Fe²⁺ + 2OH⁻ → Fe(OH)₂↓',
       'CaCO₃': 'Ca²⁺ + CO₃²⁻ → CaCO₃↓',

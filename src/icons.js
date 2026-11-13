@@ -187,15 +187,16 @@ export function getReagentIconSVG(id, r, size = 36) {
     </svg>`;
   }
 
-  // 6. Органические растворы и пероксид водорода — коническая/круглодонная колба
+  // 6. Органические растворы, галогены и пероксид водорода — коническая/круглодонная колба или склянка тёмного стекла
   if (grp === 'oth' && r.state === 'l') {
     const lCol = liquidVisualColor(id, r);
-    const amber = id === 'i2' || id === 'h2o2';
+    const amber = id === 'i2' || id === 'br2' || id === 'h2o2' || id === 'phenol';
     const glassFill = amber ? '#fef3c7' : '#f8fafc';
     const glassStroke = amber ? '#92400e' : '#64748b';
     return `<svg ${s} fill="none" aria-hidden="true">
+      ${id === 'br2' ? `<path d="M16 5c-1.2-1.2 1-2.5 0-3.6M24 5c1.2-1.2-1-2.5 0-3.6" stroke="#ea580c" stroke-width="1.3" stroke-linecap="round"/>` : ''}
       <path d="M16.5 7h7M17.5 7v6.5L10 29.2A3.2 3.2 0 0 0 12.9 34h14.2A3.2 3.2 0 0 0 30 29.2L22.5 13.5V7" fill="${glassFill}" stroke="${glassStroke}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M13.3 22.5h13.4l2.7 6.3a1.9 1.9 0 0 1-1.7 2.7H12.3a1.9 1.9 0 0 1-1.7-2.7l2.7-6.3z" fill="${lCol}" fill-opacity="0.82"/>
+      <path d="M13.3 22.5h13.4l2.7 6.3a1.9 1.9 0 0 1-1.7 2.7H12.3a1.9 1.9 0 0 1-1.7-2.7l2.7-6.3z" fill="${lCol}" fill-opacity="0.84"/>
       ${id === 'h2o2' ? `<circle cx="17.5" cy="28" r="1.2" fill="#ffffff"/><circle cx="22" cy="26.5" r="1" fill="#ffffff"/><circle cx="20" cy="29.8" r="0.9" fill="#ffffff"/>` : ''}
       <path d="M16 18l-3.5 9" stroke="#ffffff" stroke-width="1.3" stroke-linecap="round" stroke-opacity="0.8"/>
     </svg>`;

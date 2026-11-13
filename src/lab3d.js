@@ -1495,6 +1495,8 @@ export class Lab3DScene {
       state.heatLvl > 0 ||
       simInfo.gasRate > 0.01 ||
       simInfo.boiling ||
+      simInfo.volcanoErupting ||
+      simInfo.goldenRainSparkle ||
       Math.abs(state.temp - 22) > 0.25
     ) {
       this.wake(1800);
@@ -1509,9 +1511,13 @@ export class Lab3DScene {
       .map(([id, q]) => {
         const p = Math.round((state.prog[id] || 0) * 25);
         const cu = Math.round((state.coatings.copperPlated || 0) * 10);
+        const ag = Math.round((state.coatings.silverPlated || 0) * 10);
         const ch = Math.round((state.coatings.carbonFoam || 0) * 10);
+        const vo = Math.round((state.coatings.volcanoAsh || 0) * 10);
+        const km = Math.round((state.prog.dry_kmno4 || 0) * 10);
+        const ce = Math.round((state.prog.cuo_eth || 0) * 10);
         const wh = Math.round((state.coatings.anhydrousWhite || 0) * 10);
-        return `${id}:${q}:${p}:${cu}:${ch}:${wh}`;
+        return `${id}:${q}:${p}:${cu}:${ag}:${ch}:${vo}:${km}:${ce}:${wh}`;
       })
       .join('|');
 
@@ -1534,8 +1540,18 @@ export class Lab3DScene {
 
       const scaleLeft = r.catalyst || r.adsorbent ? 1 : Math.max(0.18, 1 - p * 0.85);
       let col = r.color || '#cbd5e1';
-      if (state.coatings.copperPlated > 0.2 && ['fe', 'zn', 'mg', 'al'].includes(id)) {
+      let isMetallic = (r.category || r.cat) === 'met' && state.coatings.carbonFoam < 0.2;
+
+      if (state.coatings.silverPlated > 0.2 && ['cu', 'fe', 'zn', 'mg', 'al'].includes(id)) {
+        col = '#f8fafc';
+        isMetallic = true;
+      } else if (state.coatings.copperPlated > 0.2 && ['fe', 'zn', 'mg', 'al'].includes(id)) {
         col = '#c8753c';
+        isMetallic = true;
+      }
+      if (id === 'cuo' && (state.prog.cuo_eth || 0) > 0.45) {
+        col = '#c8753c';
+        isMetallic = true;
       }
       if (id === 'cuso4s' && state.coatings.anhydrousWhite > 0.4) {
         col = '#f1f5f9';
@@ -1543,14 +1559,20 @@ export class Lab3DScene {
       if (id === 'malach' && (state.prog.dry_malach || 0) > 0.5) {
         col = '#1c1917';
       }
+      if (id === 'kmno4s' && (state.prog.dry_kmno4 || 0) > 0.45) {
+        col = '#1f2937';
+      }
       if (id === 'sucrose' && state.coatings.carbonFoam > 0.25) {
         col = '#18181b';
+      }
+      if (id === 'nh4cr2o7' && state.coatings.volcanoAsh > 0.15) {
+        col = state.coatings.volcanoAsh > 0.45 ? '#166534' : '#65a30d';
       }
 
       const mat = new THREE.MeshStandardMaterial({
         color: col,
-        metalness: r.cat === 'met' && state.coatings.carbonFoam < 0.2 ? 0.78 : 0.08,
-        roughness: r.cat === 'met' ? 0.32 : 0.85
+        metalness: isMetallic ? 0.82 : 0.08,
+        roughness: isMetallic ? 0.26 : 0.85
       });
 
       const piecesCount = r.shape === 'powder' ? 9 : (r.shape === 'wire' ? 2 : 4);
@@ -1573,6 +1595,10 @@ export class Lab3DScene {
           const grow = 1 + state.coatings.carbonFoam * 3.2;
           mesh.scale.set(grow * 1.4, grow * 2.6, grow * 1.4);
           mesh.position.y = 0.08 + state.coatings.carbonFoam * 0.18;
+        } else if (id === 'nh4cr2o7' && state.coatings.volcanoAsh > 0.15) {
+          const grow = 1 + state.coatings.volcanoAsh * 2.9;
+          mesh.scale.set(grow * 1.5, grow * 2.3, grow * 1.5);
+          mesh.position.y = 0.06 + state.coatings.volcanoAsh * 0.14 * (1 - i / (piecesCount + 1));
         } else {
           mesh.scale.setScalar(scaleLeft);
         }
@@ -1891,13 +1917,32 @@ export class Lab3DScene {
     this.bubbleInst.count = bIdx;
     this.bubbleInst.instanceMatrix.needsUpdate = true;
 
-    // 5. Движение хлопьев осадка
+    // 5. Движение хлопьев осадка (вкл. искрящийся листопад перекристаллизованного PbI₂ «золотой дождь»)
+    if (sim.goldenRainSparkle && a.wet) {
+      busy = true;
+      for (const f of this.flakes) {
+        if (f.y <= 0.05 && Math.random() < 0.08) {
+          f.y = Math.max(0.08, liqLocalY - 0.04);
+          f.vy = -0.045 - Math.random() * 0.04;
+        }
+      }
+      if (Math.random() < 0.16) {
+        this._spawnSparks(
+          this.vesselX + (Math.random() - 0.5) * 0.16,
+          vesselY + 0.08 + Math.random() * Math.max(0.06, liqLocalY - 0.1),
+          (Math.random() - 0.5) * 0.16,
+          1,
+          '#fde047',
+          0.22
+        );
+      }
+    }
     for (const f of this.flakes) {
       if (f.y > 0.045) {
         busy = true;
         f.y = Math.max(0.035, f.y + f.vy * dt);
         f.x += Math.sin(tSec * 2.5 + f.rot) * 0.015 * dt;
-        f.rot += dt * 0.8;
+        f.rot += dt * (sim.goldenRainSparkle ? 2.4 : 0.8);
       }
     }
     if (this.flakes.length > 0) {
@@ -1954,9 +1999,20 @@ export class Lab3DScene {
       this.troughBubbleInst.count = 0;
     }
 
-    // 7. Пар, бурый газ и струйки дыма горения
+    // 7. Пар, бурый газ, извержение «химического вулкана» и струйки дыма горения
     const mouthY = vesselY + this._mouthHeight(kind);
-    const emitPlume = (a.wet && s.temp > 72 && !s.tubeOn) || (s.headspace?.gas === 'NO2' && !s.tubeOn);
+    if (sim.volcanoErupting) {
+      busy = true;
+      if (Math.random() < 0.85) {
+        this._spawnSparks(this.vesselX, vesselY + 0.18, 0, 3, Math.random() < 0.5 ? '#fb923c' : '#fde047', 1.35);
+      }
+      if (Math.random() < 0.42) {
+        this._spawnSmokePuff(this.vesselX, mouthY + 0.02, 0, '#3f6212', 0.18 + Math.random() * 0.09, 0.55);
+      }
+      this.flashLight.color.set('#f97316');
+      this.flashLight.intensity = Math.max(this.flashLight.intensity, 3.2 + Math.sin(tSec * 37) * 1.1);
+    }
+    const emitPlume = (a.wet && s.temp > 72 && !s.tubeOn) || (s.headspace?.gas === 'NO2' && !s.tubeOn) || (s.headspace?.gas === 'SO2' && !s.tubeOn);
     if (emitPlume && Math.random() < 0.25) {
       this._spawnSmokePuff(
         this.vesselX,
@@ -2066,27 +2122,32 @@ export class Lab3DScene {
 
           const snuffed = !!ex.extinguish && p > 0.40;
           const isH2Pop = ex.flashColor === '#60a5fa';
+          const isSootyC2H2 = !!ex.sootyFlare;
           const isO2Flare = !!ex.flare && !isH2Pop;
 
           this.splintFlameMesh.visible = !snuffed;
           const uS = this.splintFlameMat.uniforms;
           uS.uTime.value = tSec * 1.15;
           uS.uFlicker.value = 0.92 + 0.14 * Math.sin(tSec * 27);
-          uS.uPower.value = isO2Flare && p > 0.30 ? 1.5 : 0.85;
-          uS.uTint.value.set(isO2Flare && p > 0.30 ? '#fef08a' : '#ff9e2c');
-          uS.uTintMix.value = isO2Flare && p > 0.30 ? 0.82 : 0.0;
+          uS.uPower.value = (isO2Flare || isSootyC2H2) && p > 0.30 ? 1.55 : 0.85;
+          uS.uTint.value.set(isO2Flare && p > 0.30 ? '#fef08a' : (isSootyC2H2 && p > 0.30 ? '#f97316' : '#ff9e2c'));
+          uS.uTintMix.value = (isO2Flare || isSootyC2H2) && p > 0.30 ? 0.84 : 0.0;
 
-          const flareScale = isO2Flare && p > 0.32 ? 1.95 + 0.28 * Math.sin(tSec * 35) : (isH2Pop && p > 0.34 && p < 0.55 ? 0.35 : 1.0);
+          const flareScale = (isO2Flare || isSootyC2H2) && p > 0.32 ? 1.95 + 0.28 * Math.sin(tSec * 35) : (isH2Pop && p > 0.34 && p < 0.55 ? 0.35 : 1.0);
           this.splintFlameMesh.scale.set(flareScale * 0.95, flareScale * 1.15, flareScale * 0.95);
           this.splintEmberMat.emissiveIntensity = snuffed
             ? Math.max(0.15, 2.0 * (1 - (p - 0.40) / 0.60))
-            : (isO2Flare && p > 0.32 ? 3.2 : 1.4);
+            : ((isO2Flare || isSootyC2H2) && p > 0.32 ? 3.2 : 1.4);
 
           // Эффекты в момент контакта с газом (p ≈ 0.36)
           if (p > 0.34 && !this.toolAnim.burstDone) {
             this.toolAnim.burstDone = true;
             if (isO2Flare) {
               this._spawnSparks(px, py + 0.06, 0.08, 20, '#fde047', 1.15);
+            } else if (isSootyC2H2) {
+              this._spawnSparks(px, py + 0.06, 0.08, 12, '#fb923c', 0.95);
+              this._spawnSmokePuff(px, py + 0.12, 0.08, '#18181b', 0.20, 0.46);
+              this._spawnSmokePuff(px - 0.03, py + 0.16, 0.08, '#27272a', 0.22, 0.50);
             } else if (isH2Pop) {
               this._spawnSparks(tx, ty, 0.04, 12, '#93c5fd', 1.25);
               this._spawnSmokePuff(tx, ty + 0.04, 0, '#e0f2fe', 0.22, 0.35);
@@ -2094,6 +2155,9 @@ export class Lab3DScene {
               this._spawnSmokePuff(px, py + 0.03, 0.08, '#cbd5e1', 0.11, 0.30);
               this._spawnSmokePuff(px + 0.02, py + 0.06, 0.08, '#94a3b8', 0.13, 0.34);
             }
+          }
+          if (isSootyC2H2 && p > 0.34 && p < 0.85 && Math.random() < 0.38) {
+            this._spawnSmokePuff(px, py + 0.14, 0.08, '#18181b', 0.16, 0.48);
           }
           if (snuffed && Math.random() < 0.22) {
             this._spawnSmokePuff(px, py + 0.02, 0.08, '#cbd5e1', 0.09, 0.28);
@@ -2124,7 +2188,8 @@ export class Lab3DScene {
         } else if (k === 'tongs') {
           this.h2PopMesh.visible = false;
           const isClBurn = !!ex.clBurn;
-          const targetY = isClBurn ? vesselY + 0.38 : 0.94;
+          const isSulfur = !!ex.sulfurBurn;
+          const targetY = (isClBurn || isSulfur) ? vesselY + 0.38 : 0.94;
           const px = this.vesselX + (1 - swing) * 0.52;
           const py = targetY + (1 - swing) * 0.32;
           this.propGroup.position.set(px, py, 0.06);
@@ -2133,8 +2198,12 @@ export class Lab3DScene {
           const isCu = ex.metal === 'cu';
           const heat = Math.min(1, swing * 1.35);
 
-          // Изменение цвета самого образца: Mg белеет в пепел, Cu чернеет оксидом CuO
-          if (isMg) {
+          // Изменение цвета образца: Mg белеет в пепел, S плавится и горит голубым, Cu чернеет оксидом CuO
+          if (isSulfur) {
+            this.tongsSampleMat.color.set(p > 0.35 ? '#b45309' : '#facc15');
+            this.tongsSampleMat.emissive.set('#38bdf8');
+            this.tongsSampleMat.emissiveIntensity = p > 0.20 && p < 0.88 ? 2.2 : 0.4;
+          } else if (isMg) {
             this.tongsSampleMat.color.set(p > 0.55 ? '#f8fafc' : '#cbd5e1');
             this.tongsSampleMat.emissive.set('#ffffff');
             this.tongsSampleMat.emissiveIntensity = p > 0.24 && p < 0.84 ? 3.5 : heat * 0.6;
@@ -2148,17 +2217,17 @@ export class Lab3DScene {
             this.tongsSampleMat.emissiveIntensity = heat * 2.1;
           }
 
-          // Ослепительное пламя магния или вспышка в хлоре
-          const showSampleFlame = (isMg && p > 0.22 && p < 0.86) || (isClBurn && p > 0.26 && p < 0.82);
+          // Ослепительное пламя магния, голубое пламя серы или вспышка в хлоре
+          const showSampleFlame = (isMg && p > 0.22 && p < 0.86) || (isClBurn && p > 0.26 && p < 0.82) || (isSulfur && p > 0.20 && p < 0.88);
           this.tongsFlameMesh.visible = showSampleFlame;
           if (showSampleFlame) {
             const uT = this.tongsFlameMat.uniforms;
             uT.uTime.value = tSec * 1.4;
             uT.uFlicker.value = 0.9 + 0.25 * Math.sin(tSec * 38);
-            uT.uPower.value = 1.4;
-            uT.uTint.value.set(isMg ? '#ffffff' : '#f97316');
+            uT.uPower.value = isSulfur ? 1.15 : 1.4;
+            uT.uTint.value.set(isMg ? '#ffffff' : (isSulfur ? '#38bdf8' : '#f97316'));
             uT.uTintMix.value = 0.95;
-            const fSc = isMg ? 1.55 : 1.15;
+            const fSc = isMg ? 1.55 : (isSulfur ? 1.1 : 1.15);
             this.tongsFlameMesh.scale.set(fSc, fSc * 1.25, fSc);
           }
 
@@ -2172,6 +2241,8 @@ export class Lab3DScene {
           if (isMg && p > 0.25 && p < 0.80) {
             if (Math.random() < 0.55) this._spawnSparks(px, py + 0.03, 0.06, 2, '#ffffff', 1.15);
             if (Math.random() < 0.30) this._spawnSmokePuff(px, py + 0.08, 0.06, '#f8fafc', 0.16, 0.44);
+          } else if (isSulfur && p > 0.24 && p < 0.84) {
+            if (Math.random() < 0.35) this._spawnSmokePuff(px, py + 0.06, 0.04, '#e0f2fe', 0.17, 0.38);
           } else if (isClBurn && p > 0.28 && p < 0.80) {
             if (Math.random() < 0.50) this._spawnSparks(px, py, 0.04, 2, '#fb923c', 0.95);
             if (Math.random() < 0.35) this._spawnSmokePuff(px, py + 0.06, 0.04, '#b45309', 0.19, 0.36);
