@@ -12,6 +12,7 @@ const R = (formula, name, sub, cat, state, color, hazard, molar, desc, extra = {
   formula,
   name,
   sub,
+  category: cat,
   cat,
   state, // 's' = твёрдое, 'l' = раствор/жидкость, 'd' = капли индикатора, 'g' = газ
   color,

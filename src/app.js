@@ -12,6 +12,7 @@ import { SoundEngine } from './audio.js';
 import { MicroWorld } from './micro.js';
 import { Lab3DScene } from './lab3d.js';
 import { buildReportHTML } from './report.js';
+import { getReagentIconSVG, getCategoryIconSVG, getReagentHazardKind } from './icons.js';
 
 const STORAGE_DONE_KEY = 'chemlab3d.done.v1';
 const THEMES = ['classic', 'slate', 'warm'];
@@ -148,6 +149,7 @@ class ChemLabApp {
       reagentTotalBadge: $('reagentTotalBadge'),
       reagentSearch: $('reagentSearch'),
       catPills: $('catPills'),
+      selIconBox: $('selIconBox'),
       selFormula: $('selFormula'),
       selHazard: $('selHazard'),
       selName: $('selName'),
@@ -629,14 +631,14 @@ class ChemLabApp {
     this._pushUndoSnapshot();
     if (sel === 'mg') {
       this.sound.play('flare');
-      this.scene3d.triggerToolAnimation('tongs', { color: '#ffffff', flashColor: '#ffffff', flashPower: 14, dur: 2.4 });
+      this.scene3d.triggerToolAnimation('tongs', { metal: 'mg', color: '#ffffff', flashColor: '#ffffff', flashPower: 14, dur: 2.5 });
       this.labState.amt.mgo = (this.labState.amt.mgo || 0) + 1;
       this.labState.addedOrder.push({ id: 'mgo', qty: 1, unit: 'порц.' });
       this.showToast('Магний сгорел ослепительным белым пламенем (2Mg + O₂ → 2MgO)! Белый пепел MgO перенесён в сосуд.');
       this._log('Горение магния в щипцах: 2Mg + O₂ → 2MgO, пепел помещён в сосуд');
     } else if (this.labState.headspace?.gas === 'Cl2' && this.labState.headspace.amount > 0.3) {
       this.sound.play('flare');
-      this.scene3d.triggerToolAnimation('tongs', { color: '#f97316', flashColor: '#ea580c', flashPower: 7 });
+      this.scene3d.triggerToolAnimation('tongs', { metal: sel, clBurn: true, color: '#f97316', flashColor: '#ea580c', flashPower: 7, dur: 2.4 });
       this.labState.headspace = { gas: 'NO2', amount: 0.85 };
       const saltId = sel === 'fe' ? 'fecl3' : 'cucl2';
       this.labState.amt[saltId] = (this.labState.amt[saltId] || 0) + 5;
@@ -645,7 +647,7 @@ class ChemLabApp {
       this._log(`Горение ${REAGENTS[sel].formula} в атмосфере хлора Cl₂`);
     } else {
       this.sound.play('ignite');
-      this.scene3d.triggerToolAnimation('tongs', { color: '#fb7185' });
+      this.scene3d.triggerToolAnimation('tongs', { metal: sel, color: '#fb7185', dur: 2.3 });
       if (sel === 'cu') {
         this.labState.amt.cuo = (this.labState.amt.cuo || 0) + 1;
         this.showToast('Медная проволока в пламени покрылась чёрным налётом оксида меди(II) CuO и опущена в сосуд.');
@@ -818,8 +820,9 @@ class ChemLabApp {
 
   _renderCategoryPills() {
     this.dom.catPills.innerHTML = CATEGORIES.map((c) => `
-      <button type="button" class="cat-pill ${c.id === this.activeCategory ? 'active' : ''}" data-cat="${c.id}">
-        ${c.short}
+      <button type="button" class="cat-pill ${c.id === this.activeCategory ? 'active' : ''}" data-cat="${c.id}" title="${c.name}">
+        ${getCategoryIconSVG(c.id)}
+        <span>${c.short}</span>
       </button>
     `).join('');
 
@@ -834,7 +837,8 @@ class ChemLabApp {
 
   _renderReagentGrid() {
     const entries = Object.entries(REAGENTS).filter(([id, r]) => {
-      if (this.activeCategory !== 'all' && r.cat !== this.activeCategory) return false;
+      const grp = r.category || r.cat;
+      if (this.activeCategory !== 'all' && grp !== this.activeCategory) return false;
       if (!this.searchQuery) return true;
       const hay = `${id} ${r.formula} ${r.name} ${r.sub}`.toLowerCase();
       return hay.includes(this.searchQuery);
@@ -843,16 +847,25 @@ class ChemLabApp {
     this.dom.reagentTotalBadge.textContent = `${entries.length} в-в`;
     const stateLabels = { s: 'тв.', l: 'р-р', d: 'инд.', g: 'газ' };
 
-    this.dom.reagentGrid.innerHTML = entries.map(([id, r]) => `
+    this.dom.reagentGrid.innerHTML = entries.map(([id, r]) => {
+      const hazKind = getReagentHazardKind(r);
+      const hazDot = hazKind ? `<span class="rc-haz-dot ${hazKind}" title="${r.hazard}"></span>` : '';
+      return `
       <button type="button" class="reagent-card ${id === this.selectedReagent ? 'selected' : ''}"
-              data-id="${id}" draggable="true" title="Клик — выбрать, двойной клик или перетаскивание — добавить в сосуд">
-        <div class="rc-top">
-          <span class="rc-formula">${r.formula}</span>
-          <span class="rc-state">${stateLabels[r.state] || ''}</span>
+              data-id="${id}" draggable="true" title="${r.name} (${r.sub}) — клик: выбрать, двойной клик или перетаскивание: добавить">
+        <div class="rc-icon-wrap">
+          ${getReagentIconSVG(id, r, 30)}
+          ${hazDot}
         </div>
-        <div class="rc-name">${r.name}</div>
-      </button>
-    `).join('');
+        <div class="rc-body">
+          <div class="rc-top">
+            <span class="rc-formula">${r.formula}</span>
+            <span class="rc-state">${stateLabels[r.state] || ''}</span>
+          </div>
+          <div class="rc-name">${r.name}</div>
+        </div>
+      </button>`;
+    }).join('');
 
     this.dom.reagentGrid.querySelectorAll('.reagent-card').forEach((card) => {
       const id = card.dataset.id;
@@ -870,6 +883,9 @@ class ChemLabApp {
   _renderSelectedReagent() {
     const r = REAGENTS[this.selectedReagent];
     if (!r) return;
+    if (this.dom.selIconBox) {
+      this.dom.selIconBox.innerHTML = getReagentIconSVG(this.selectedReagent, r, 38);
+    }
     this.dom.selFormula.textContent = r.formula;
     this.dom.selHazard.textContent = r.hazard || `M = ${r.molar}`;
     this.dom.selHazard.style.display = (r.hazard || r.molar !== '—') ? 'inline-block' : 'none';
@@ -978,7 +994,7 @@ class ChemLabApp {
         const unit = r.state === 's' ? 'порц.' : (r.state === 'd' ? 'кап.' : 'мл');
         return `
           <div class="vessel-item">
-            <span class="swatch" style="background:${r.color}"></span>
+            <span class="vi-icon">${getReagentIconSVG(id, r, 21)}</span>
             <b>${r.formula}</b>
             <span style="color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.name}</span>
             <span class="qty">${q} ${unit}</span>

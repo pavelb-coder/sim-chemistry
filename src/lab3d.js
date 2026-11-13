@@ -54,15 +54,19 @@ export class Lab3DScene {
     this.camTargetCur = new THREE.Vector3(0.35, 1.45, 0);
     this.camPosCur = new THREE.Vector3(0.4, 2.35, 6.6);
 
-    // Физика живой жидкости и частиц
+    // Физика живой жидкости, горения и частиц
     this.slosh = { angle: 0, vel: 0 };
     this.bubbles = [];
     this.flakes = [];
     this.steamClouds = [];
+    this.sparks = [];
     this.troughBubbles = [];
     this.ripples = [];
+    this.emberHeat = 0;
+    this.gauzeHeat = 0;
+    this.prevHeatLvl = 0;
     this.pourAnim = { active: false, t: 0, dur: 1.0, color: '#cfe8f7', solid: false, formula: '' };
-    this.toolAnim = { kind: '', t: 0, dur: 0, extra: {} };
+    this.toolAnim = { kind: '', t: 0, dur: 0, extra: {}, burstDone: false };
     this.flameTint = { color: '', until: 0 };
     this.flashEffect = { intensity: 0, color: '#ffffff' };
 
@@ -252,14 +256,26 @@ export class Lab3DScene {
     ring.castShadow = true;
     this.tripodGroup.add(ring);
 
-    // Асбестовая / керамическая рассекательная сетка
+    // Асбестовая / керамическая рассекательная сетка + пятно накала от пламени
     const gauze = new THREE.Mesh(
       new THREE.CylinderGeometry(0.53, 0.53, 0.012, 32),
-      new THREE.MeshStandardMaterial({ color: '#cbd5e1', roughness: 0.85, metalness: 0.25, transparent: true, opacity: 0.82 })
+      new THREE.MeshStandardMaterial({ color: '#cbd5e1', roughness: 0.85, metalness: 0.25, transparent: true, opacity: 0.84 })
     );
     gauze.position.y = this.vesselBaseY - 0.01;
     gauze.receiveShadow = true;
     this.tripodGroup.add(gauze);
+
+    this.gauzeGlowMat = new THREE.MeshBasicMaterial({
+      map: this._createHotSpotTexture(),
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    const gauzeGlow = new THREE.Mesh(new THREE.PlaneGeometry(0.68, 0.68), this.gauzeGlowMat);
+    gauzeGlow.rotation.x = -Math.PI / 2;
+    gauzeGlow.position.y = this.vesselBaseY - 0.002;
+    this.tripodGroup.add(gauzeGlow);
 
     for (let i = 0; i < 3; i++) {
       const ang = (i * Math.PI * 2) / 3 + 0.4;
@@ -332,11 +348,34 @@ export class Lab3DScene {
     this.burnerGroup.add(collar);
 
     const wick = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.028, 0.032, 0.13, 12),
-      new THREE.MeshStandardMaterial({ color: '#e7e5e4', roughness: 0.95 })
+      new THREE.CylinderGeometry(0.026, 0.032, 0.11, 14),
+      new THREE.MeshStandardMaterial({ color: '#d6d3d1', roughness: 0.95 })
     );
-    wick.position.y = 0.66;
+    wick.position.y = 0.65;
     this.burnerGroup.add(wick);
+
+    // Обугленный кончик фитиля с тлеющим жаром после гашения
+    this.wickEmberMat = new THREE.MeshStandardMaterial({
+      color: '#1c1917',
+      emissive: '#ff4500',
+      emissiveIntensity: 0,
+      roughness: 0.9
+    });
+    const wickChar = new THREE.Mesh(
+      new THREE.SphereGeometry(0.030, 14, 12),
+      this.wickEmberMat
+    );
+    wickChar.scale.set(0.92, 1.35, 0.92);
+    wickChar.position.y = 0.71;
+    this.burnerGroup.add(wickChar);
+
+    // Стеклянный колпачок спиртовки (стоит рядом на столе во время горения)
+    this.snufferCap = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.105, 0.128, 0.24, 22),
+      this._createGlassMaterial(0.24)
+    );
+    this.snufferCap.position.set(0.54, 0.12, 0.16);
+    this.burnerGroup.add(this.snufferCap);
 
     // Невидимый хитбокс спиртовки для удобного клика мышью/пальцем
     const burnerHit = new THREE.Mesh(
@@ -348,32 +387,203 @@ export class Lab3DScene {
     this.burnerGroup.add(burnerHit);
     this.interactables.push(burnerHit);
 
-    // Многослойное 3D-пламя с отсечением по дну сосуда
-    this.flameClipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), this.vesselBaseY - 0.01);
+    // Органическое живое 3D-пламя (каплевидная геометрия + турбулентный GLSL-шейдер)
     this.flameGroup = new THREE.Group();
-    this.flameGroup.position.set(0, 0.70, 0);
+    this.flameGroup.position.set(0, 0.695, 0);
     this.flameGroup.visible = false;
 
-    const makeFlameCone = (r, h, col, op) => {
-      const geo = new THREE.ConeGeometry(r, h, 24, 1, false);
-      geo.translate(0, h * 0.46, 0);
-      const mat = new THREE.MeshBasicMaterial({
-        color: col,
-        transparent: true,
-        opacity: op,
-        depthWrite: false,
-        clippingPlanes: [this.flameClipPlane]
-      });
-      return new THREE.Mesh(geo, mat);
-    };
+    const outerGeo = this._createTeardropFlameGeo(0.148, 0.56, 28);
+    this.flameShaderMat = this._createOrganicFlameMaterial(0.56);
+    this.flameOuter = new THREE.Mesh(outerGeo, this.flameShaderMat);
+    this.flameOuter.renderOrder = 7;
 
-    this.flameOuter = makeFlameCone(0.145, 0.50, '#ff5d00', 0.78);
-    this.flameMid = makeFlameCone(0.095, 0.36, '#ffb703', 0.88);
-    this.flameCore = makeFlameCone(0.050, 0.18, '#3b82f6', 0.85);
-    this.flameGroup.add(this.flameOuter, this.flameMid, this.flameCore);
+    // Второй внутренний светящийся язычок в противофазе для живой многослойности огня
+    const midGeo = this._createTeardropFlameGeo(0.098, 0.41, 24);
+    this.flameMidMat = this._createOrganicFlameMaterial(0.41);
+    this.flameMid = new THREE.Mesh(midGeo, this.flameMidMat);
+    this.flameMid.position.y = 0.025;
+    this.flameMid.renderOrder = 6;
 
+    // Внутренний голубоватый конус паров спирта у фитиля
+    const coreGeo = this._createTeardropFlameGeo(0.058, 0.17, 18);
+    this.flameInnerMat = new THREE.MeshBasicMaterial({
+      color: '#2563eb',
+      transparent: true,
+      opacity: 0.42,
+      depthWrite: false,
+      toneMapped: false
+    });
+    this.flameCore = new THREE.Mesh(coreGeo, this.flameInnerMat);
+    this.flameCore.position.y = 0.008;
+    this.flameCore.renderOrder = 5;
+
+    // Мягкий тепловой ореол вокруг языка пламени
+    this.flameHaloMat = new THREE.SpriteMaterial({
+      map: this._createHotSpotTexture(),
+      color: '#ff8c24',
+      transparent: true,
+      opacity: 0.28,
+      depthWrite: false,
+      toneMapped: false
+    });
+    this.flameHalo = new THREE.Sprite(this.flameHaloMat);
+    this.flameHalo.position.set(0, 0.23, 0);
+    this.flameHalo.scale.set(0.68, 0.78, 1);
+
+    this.flameGroup.add(this.flameHalo, this.flameCore, this.flameMid, this.flameOuter);
     this.burnerGroup.add(this.flameGroup);
     this.scene.add(this.burnerGroup);
+  }
+
+  _createHotSpotTexture() {
+    const c = document.createElement('canvas');
+    c.width = 128;
+    c.height = 128;
+    const g = c.getContext('2d');
+    const gr = g.createRadialGradient(64, 64, 3, 64, 64, 62);
+    gr.addColorStop(0.0, 'rgba(255, 245, 200, 0.95)');
+    gr.addColorStop(0.28, 'rgba(255, 132, 24, 0.72)');
+    gr.addColorStop(0.62, 'rgba(220, 38, 38, 0.28)');
+    gr.addColorStop(1.0, 'rgba(220, 38, 38, 0)');
+    g.fillStyle = gr;
+    g.fillRect(0, 0, 128, 128);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  _createTeardropFlameGeo(maxR = 0.14, height = 0.56, steps = 26) {
+    const pts = [];
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      // Естественный каплевидный профиль: узкое основание у фитиля -> пузатая середина -> тонкий язычок
+      let r;
+      if (t < 0.26) {
+        const k = t / 0.26;
+        r = maxR * (0.24 + 0.76 * Math.sin(k * Math.PI * 0.5));
+      } else {
+        const k = (t - 0.26) / 0.74;
+        r = maxR * Math.pow(1 - k, 1.32) * (1 + 0.12 * Math.sin(k * Math.PI));
+      }
+      pts.push(new THREE.Vector2(Math.max(0.0015, r), t * height));
+    }
+    return new THREE.LatheGeometry(pts, 28);
+  }
+
+  _createOrganicFlameMaterial(flameHeight = 0.56) {
+    return new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      toneMapped: false,
+      side: THREE.FrontSide,
+      uniforms: {
+        uTime: { value: 0 },
+        uFlameH: { value: flameHeight },
+        uPower: { value: 1.0 },
+        uFlicker: { value: 1.0 },
+        uCapWorldY: { value: 10.0 },
+        uTint: { value: new THREE.Color('#ff7b00') },
+        uTintMix: { value: 0.0 },
+        uOpacity: { value: 0.96 }
+      },
+      vertexShader: `
+        uniform float uTime;
+        uniform float uFlameH;
+        uniform float uPower;
+        uniform float uFlicker;
+        uniform float uCapWorldY;
+
+        varying float vH;
+        varying vec3 vNormalView;
+        varying vec3 vViewDir;
+        varying float vSpread;
+
+        void main() {
+          vH = clamp(position.y / uFlameH, 0.0, 1.0);
+          vec3 pos = position;
+
+          // Основание пламени закреплено на фитиле, верхний язычок колеблется конвекцией
+          float pin = smoothstep(0.0, 0.22, vH);
+          float w1 = sin(vH * 8.2 - uTime * 13.5);
+          float w2 = sin(vH * 15.5 - uTime * 21.0 + pos.z * 10.0);
+          float wz = cos(vH * 9.5 - uTime * 11.8 + pos.x * 8.0);
+          float waist = 1.0 + 0.075 * sin(vH * 10.5 - uTime * 17.0) * pin;
+
+          pos.x = pos.x * waist + (w1 * 0.025 + w2 * 0.011) * pin * uPower;
+          pos.z = pos.z * waist + (wz * 0.019) * pin * uPower;
+          pos.y *= uFlicker;
+
+          vec4 worldPos = modelMatrix * vec4(pos, 1.0);
+
+          // Естественное обтекание дна колбы / пробирки / рассекательной сетки
+          vSpread = 0.0;
+          if (worldPos.y > uCapWorldY) {
+            float over = worldPos.y - uCapWorldY;
+            vSpread = clamp(over * 3.0, 0.0, 1.0);
+            worldPos.y = uCapWorldY - 0.004 * vSpread;
+            vec3 originWorld = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+            vec2 rad = worldPos.xz - originWorld.xz;
+            float rLen = length(rad);
+            vec2 dir = rLen > 0.0001 ? rad / rLen : vec2(1.0, 0.0);
+            worldPos.xz += dir * over * 0.68;
+          }
+
+          vec4 mvPos = viewMatrix * worldPos;
+          vNormalView = normalize(normalMatrix * normal);
+          vViewDir = normalize(-mvPos.xyz);
+          gl_Position = projectionMatrix * mvPos;
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform vec3 uTint;
+        uniform float uTintMix;
+        uniform float uOpacity;
+
+        varying float vH;
+        varying vec3 vNormalView;
+        varying vec3 vViewDir;
+        varying float vSpread;
+
+        void main() {
+          float ndv = abs(dot(normalize(vNormalView), normalize(vViewDir)));
+          float rim = smoothstep(0.02, 0.46, ndv);
+
+          float turb = 0.06 * sin(vH * 17.0 - uTime * 18.5 + vNormalView.x * 3.5);
+          float h = clamp(vH + turb, 0.0, 1.0);
+
+          // Зоны пламени спиртовки: голубая зона у фитиля -> соломенно-золотое ядро -> насыщенный огненно-янтарный язычок
+          vec3 cBlue   = vec3(0.15, 0.46, 0.98);
+          vec3 cHot    = vec3(1.00, 0.92, 0.45);
+          vec3 cGold   = vec3(1.00, 0.62, 0.04);
+          vec3 cOrange = vec3(0.98, 0.34, 0.02);
+          vec3 cTip    = vec3(0.90, 0.16, 0.02);
+
+          vec3 col = mix(cBlue, cHot, smoothstep(0.03, 0.22, h));
+          col = mix(col, cGold, smoothstep(0.22, 0.52, h));
+          col = mix(col, cOrange, smoothstep(0.52, 0.82, h));
+          col = mix(col, cTip, smoothstep(0.82, 0.99, h));
+
+          // Раскалённое светлое ядро в средней трети
+          float coreGlow = pow(ndv, 2.0) * smoothstep(0.08, 0.30, h) * (1.0 - smoothstep(0.58, 0.94, h));
+          col = mix(col, vec3(1.0, 0.98, 0.78), coreGlow * 0.62);
+
+          // Окрашивание пламени катионами металлов с сохранением голубой зоны у фитиля
+          if (uTintMix > 0.01) {
+            float ionMask = smoothstep(0.09, 0.26, h);
+            vec3 ionCol = mix(uTint, vec3(1.0, 0.98, 0.90), coreGlow * 0.48);
+            col = mix(col, ionCol, ionMask * uTintMix);
+          }
+
+          float baseFade = smoothstep(0.0, 0.07, vH);
+          float tipFade  = 1.0 - smoothstep(0.82, 1.0, vH);
+          float spreadFade = 1.0 - vSpread * 0.25;
+          float alpha = rim * baseFade * tipFade * spreadFade * uOpacity;
+
+          gl_FragColor = vec4(col, clamp(alpha, 0.0, 0.97));
+        }
+      `
+    });
   }
 
   _createGlassMaterial(opacity = 0.18) {
@@ -810,24 +1020,122 @@ export class Lab3DScene {
     this.streamMesh.visible = false;
     this.scene.add(this.streamMesh);
 
-    // 2. Анимируемый инструмент (лучина / петля / щипцы)
+    // 2. Три детализированных инструмента для горения: лучина, нихромовая петля и тигельные щипцы
     this.propGroup = new THREE.Group();
     this.propGroup.visible = false;
-    const stick = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.016, 0.018, 0.95, 10),
-      new THREE.MeshStandardMaterial({ color: '#d6a87c', roughness: 0.75 })
-    );
-    stick.rotation.z = Math.PI / 3;
-    stick.position.set(-0.38, 0.24, 0);
-    this.propStick = stick;
-
-    this.propTipFlame = new THREE.Mesh(
-      new THREE.SphereGeometry(0.065, 14, 14),
-      new THREE.MeshBasicMaterial({ color: '#ffae34', transparent: true, opacity: 0.9 })
-    );
-    this.propTipFlame.scale.set(0.8, 1.7, 0.8);
-    this.propGroup.add(stick, this.propTipFlame);
     this.scene.add(this.propGroup);
+
+    // 2а. Деревянная лучина с обугленным тлеющим кончиком и вертикальным язычком пламени
+    this.splintGroup = new THREE.Group();
+    const woodStick = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.013, 0.016, 0.92, 10),
+      new THREE.MeshStandardMaterial({ color: '#deb887', roughness: 0.78 })
+    );
+    woodStick.rotation.z = -Math.PI / 3.1;
+    woodStick.position.set(0.39, 0.24, 0);
+
+    const splintChar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.011, 0.0135, 0.11, 10),
+      new THREE.MeshStandardMaterial({ color: '#1c1917', roughness: 0.92 })
+    );
+    splintChar.rotation.z = -Math.PI / 3.1;
+    splintChar.position.set(0.04, 0.025, 0);
+
+    this.splintEmberMat = new THREE.MeshStandardMaterial({
+      color: '#292524',
+      emissive: '#ff3b00',
+      emissiveIntensity: 1.4,
+      roughness: 0.85
+    });
+    const splintEmber = new THREE.Mesh(new THREE.SphereGeometry(0.016, 12, 10), this.splintEmberMat);
+    splintEmber.position.set(0, 0, 0);
+
+    this.splintFlameMat = this._createOrganicFlameMaterial(0.22);
+    this.splintFlameMesh = new THREE.Mesh(this._createTeardropFlameGeo(0.048, 0.22, 20), this.splintFlameMat);
+    this.splintFlameMesh.position.set(0, -0.01, 0);
+    this.splintFlameMesh.renderOrder = 7;
+
+    this.splintGroup.add(woodStick, splintChar, splintEmber, this.splintFlameMesh);
+    this.propGroup.add(this.splintGroup);
+
+    // 2б. Нихромовая петля в стеклянном держателе
+    this.loopGroup = new THREE.Group();
+    const glassRod = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.018, 0.020, 0.68, 12),
+      this._createGlassMaterial(0.32)
+    );
+    glassRod.rotation.z = -Math.PI / 2.35;
+    glassRod.position.set(0.48, 0.12, 0);
+
+    this.loopWireMat = new THREE.MeshStandardMaterial({
+      color: '#94a3b8',
+      metalness: 0.85,
+      roughness: 0.3,
+      emissive: '#ff4d00',
+      emissiveIntensity: 0
+    });
+    const wireShaft = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.18, 8), this.loopWireMat);
+    wireShaft.rotation.z = -Math.PI / 2.35;
+    wireShaft.position.set(0.09, 0.022, 0);
+
+    const wireRing = new THREE.Mesh(new THREE.TorusGeometry(0.028, 0.0055, 8, 20), this.loopWireMat);
+    wireRing.position.set(0, 0, 0);
+
+    this.loopGroup.add(glassRod, wireShaft, wireRing);
+    this.propGroup.add(this.loopGroup);
+
+    // 2в. Стальные тигельные щипцы с раскаляемым образцом металла и ореолом горения
+    this.tongsGroup = new THREE.Group();
+    const tongSteel = new THREE.MeshStandardMaterial({ color: '#334155', metalness: 0.82, roughness: 0.32 });
+    const jawA = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.015, 0.78, 10), tongSteel);
+    jawA.rotation.z = -Math.PI / 2.3 + 0.06;
+    jawA.position.set(0.42, 0.11, 0.012);
+    const jawB = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.015, 0.78, 10), tongSteel);
+    jawB.rotation.z = -Math.PI / 2.3 - 0.06;
+    jawB.position.set(0.42, 0.08, -0.012);
+
+    this.tongsSampleMat = new THREE.MeshStandardMaterial({
+      color: '#cbd5e1',
+      metalness: 0.78,
+      roughness: 0.32,
+      emissive: '#ffffff',
+      emissiveIntensity: 0
+    });
+    this.tongsSampleMesh = new THREE.Mesh(
+      new THREE.TorusGeometry(0.045, 0.012, 10, 22, Math.PI * 1.65),
+      this.tongsSampleMat
+    );
+    this.tongsSampleMesh.position.set(0, 0, 0);
+
+    this.tongsFlameMat = this._createOrganicFlameMaterial(0.28);
+    this.tongsFlameMesh = new THREE.Mesh(this._createTeardropFlameGeo(0.075, 0.28, 20), this.tongsFlameMat);
+    this.tongsFlameMesh.position.set(0, -0.02, 0);
+    this.tongsFlameMesh.renderOrder = 7;
+
+    this.tongsGlareMat = new THREE.SpriteMaterial({
+      map: this._createHotSpotTexture(),
+      color: '#ffffff',
+      transparent: true,
+      opacity: 0,
+      depthWrite: false
+    });
+    this.tongsGlareSprite = new THREE.Sprite(this.tongsGlareMat);
+    this.tongsGlareSprite.scale.set(0.75, 0.75, 1);
+
+    this.tongsGroup.add(jawA, jawB, this.tongsSampleMesh, this.tongsFlameMesh, this.tongsGlareSprite);
+    this.propGroup.add(this.tongsGroup);
+
+    // 2г. Расширяющаяся голубая волна хлопка водорода H₂
+    this.h2PopMat = new THREE.MeshBasicMaterial({
+      color: '#60a5fa',
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    this.h2PopMesh = new THREE.Mesh(new THREE.SphereGeometry(0.12, 18, 14), this.h2PopMat);
+    this.h2PopMesh.visible = false;
+    this.scene.add(this.h2PopMesh);
   }
 
   _buildParticles() {
@@ -859,9 +1167,9 @@ export class Lab3DScene {
     this.troughBubbleInst.count = 0;
     this.scene.add(this.troughBubbleInst);
 
-    // 4. Клубы пара / бурого газа NO₂ / дыма над горлышком
+    // 4. Клубы пара / бурого газа NO₂ / дыма горения
     const steamTex = this._createSoftCircleTexture();
-    for (let i = 0; i < 18; i++) {
+    for (let i = 0; i < 26; i++) {
       const mat = new THREE.SpriteMaterial({
         map: steamTex,
         color: '#f1f5f9',
@@ -872,10 +1180,68 @@ export class Lab3DScene {
       const sp = new THREE.Sprite(mat);
       sp.visible = false;
       this.scene.add(sp);
-      this.steamClouds.push({ sprite: sp, life: 0, x: 0, y: 0, z: 0, vx: 0, size: 0.2, color: '#f1f5f9' });
+      this.steamClouds.push({ sprite: sp, life: 0, x: 0, y: 0, z: 0, vx: 0, vy: 0.42, size: 0.2, color: '#f1f5f9' });
     }
 
+    // 5. Искры и раскалённые микрочастицы горения (Mg, O₂, Fe + Cl₂, калий на воде)
+    const sparkTex = this._createHotSpotTexture();
+    for (let i = 0; i < 34; i++) {
+      const mat = new THREE.SpriteMaterial({
+        map: sparkTex,
+        color: '#fde047',
+        transparent: true,
+        opacity: 0,
+        depthWrite: false
+      });
+      const sp = new THREE.Sprite(mat);
+      sp.visible = false;
+      sp.renderOrder = 8;
+      this.scene.add(sp);
+      this.sparks.push({ sprite: sp, life: 0, maxLife: 1, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, size: 0.05, color: '#fde047' });
+    }
+
+    // 6. Фиолетовый язычок пламени для калия, бегающего по воде
+    this.alkaliFlameMat = this._createOrganicFlameMaterial(0.18);
+    this.alkaliFlameMesh = new THREE.Mesh(this._createTeardropFlameGeo(0.045, 0.18, 16), this.alkaliFlameMat);
+    this.alkaliFlameMesh.visible = false;
+    this.alkaliFlameMesh.renderOrder = 7;
+    this.vesselRoot.add(this.alkaliFlameMesh);
+
     this._dummy = new THREE.Object3D();
+  }
+
+  _spawnSmokePuff(x, y, z, color = '#e2e8f0', size = 0.14, vy = 0.36) {
+    const free = this.steamClouds.find((c) => c.life <= 0);
+    if (!free) return;
+    free.life = 1.0;
+    free.x = x + (Math.random() - 0.5) * 0.04;
+    free.y = y;
+    free.z = z + (Math.random() - 0.5) * 0.04;
+    free.vx = (Math.random() - 0.5) * 0.09;
+    free.vy = vy;
+    free.size = size;
+    free.color = color;
+  }
+
+  _spawnSparks(x, y, z, count = 10, color = '#fde047', speed = 1.0) {
+    let spawned = 0;
+    for (const sp of this.sparks) {
+      if (sp.life > 0) continue;
+      const ang = Math.random() * Math.PI * 2;
+      const elev = (Math.random() - 0.22) * Math.PI * 0.7;
+      const v = (0.35 + Math.random() * 0.95) * speed;
+      sp.maxLife = 0.45 + Math.random() * 0.55;
+      sp.life = sp.maxLife;
+      sp.x = x + (Math.random() - 0.5) * 0.03;
+      sp.y = y + (Math.random() - 0.5) * 0.03;
+      sp.z = z + (Math.random() - 0.5) * 0.03;
+      sp.vx = Math.cos(ang) * Math.cos(elev) * v;
+      sp.vy = Math.sin(elev) * v + 0.35 * speed;
+      sp.vz = Math.sin(ang) * Math.cos(elev) * v;
+      sp.size = 0.038 + Math.random() * 0.042;
+      sp.color = color;
+      if (++spawned >= count) break;
+    }
   }
 
   _createSoftCircleTexture() {
@@ -1065,11 +1431,11 @@ export class Lab3DScene {
   }
 
   triggerToolAnimation(kind, extra = {}) {
-    this.toolAnim = { kind, t: 0, dur: extra.dur || 2.1, extra };
+    this.toolAnim = { kind, t: 0, dur: extra.dur || 2.25, extra, burstDone: false };
     if (extra.flashColor) {
       this.flashEffect = { intensity: extra.flashPower || 8, color: extra.flashColor };
     }
-    this.wake(3000);
+    this.wake(3200);
   }
 
   wake(ms = 2200) {
@@ -1211,7 +1577,7 @@ export class Lab3DScene {
           mesh.scale.setScalar(scaleLeft);
         }
 
-        mesh.userData = { float: !!r.float, baseAng: ang, rad };
+        mesh.userData = { float: !!r.float, waterFlame: r.waterFlame || '', baseAng: ang, rad };
         this.solidsGroup.add(mesh);
       }
       slotIdx++;
@@ -1332,8 +1698,10 @@ export class Lab3DScene {
       this.meniscusMesh.visible = false;
     }
 
-    // Плавающие щелочные металлы бегают по поверхности воды
+    // Плавающие щелочные металлы бегают по поверхности воды (+ фиолетовое пламя калия)
     const tSec = ts / 1000;
+    let alkaliFlamePos = null;
+    let alkaliFlameColor = '';
     for (const child of this.solidsGroup.children) {
       if (child.userData.float && a.wet) {
         busy = true;
@@ -1344,7 +1712,25 @@ export class Lab3DScene {
           liqLocalY + 0.01,
           Math.sin(a1 * 1.3) * rMax * 0.7
         );
+        if (child.userData.waterFlame && !alkaliFlamePos) {
+          alkaliFlamePos = child.position;
+          alkaliFlameColor = child.userData.waterFlame;
+        }
       }
+    }
+    if (alkaliFlamePos && a.wet) {
+      this.alkaliFlameMesh.visible = true;
+      this.alkaliFlameMesh.position.set(alkaliFlamePos.x, alkaliFlamePos.y + 0.01, alkaliFlamePos.z);
+      const uA = this.alkaliFlameMat.uniforms;
+      uA.uTime.value = tSec * 1.25;
+      uA.uFlicker.value = 0.9 + 0.25 * Math.sin(tSec * 31);
+      uA.uTint.value.set(alkaliFlameColor);
+      uA.uTintMix.value = 0.88;
+      if (Math.random() < 0.22) {
+        this._spawnSparks(this.vesselX + alkaliFlamePos.x, vesselY + alkaliFlamePos.y + 0.05, alkaliFlamePos.z, 1, alkaliFlameColor, 0.55);
+      }
+    } else if (this.alkaliFlameMesh) {
+      this.alkaliFlameMesh.visible = false;
     }
 
     // Донный слой осадка, серебряное зеркало, кольцо возгонки и газ над раствором
@@ -1370,25 +1756,88 @@ export class Lab3DScene {
       this.headGasMat.opacity = Math.max(0, this.headGasMat.opacity - dt * 1.5);
     }
 
-    // 3. Пламя спиртовки и окрашивание катионами
+    // 3. Естественное пламя спиртовки, накал сетки, тление фитиля и окрашивание катионами
+    if (this.prevHeatLvl > 0 && s.heatLvl === 0) {
+      // При задувании/гашении спиртовки от тлеющего фитиля поднимается лёгкий струящийся дымок
+      this._spawnSmokePuff(this.vesselX, 0.74, 0, '#e2e8f0', 0.11, 0.28);
+      this._spawnSmokePuff(this.vesselX + 0.02, 0.77, 0.01, '#cbd5e1', 0.13, 0.32);
+    }
+    this.prevHeatLvl = s.heatLvl;
+
+    const targetEmber = s.heatLvl > 0 ? 1.0 : 0.0;
+    this.emberHeat += (targetEmber - this.emberHeat) * Math.min(1, dt * (s.heatLvl > 0 ? 4.5 : 0.65));
+    if (this.emberHeat > 0.015) busy = true;
+    this.wickEmberMat.emissiveIntensity = this.emberHeat * (1.35 + 0.25 * Math.sin(tSec * 15));
+
+    const targetGauze = kind !== 'tube' && s.heatLvl > 0 ? [0, 0.36, 0.68, 0.96][s.heatLvl] : 0;
+    this.gauzeHeat += (targetGauze - this.gauzeHeat) * Math.min(1, dt * (targetGauze > this.gauzeHeat ? 0.85 : 0.55));
+    if (this.gauzeHeat > 0.01) busy = true;
+    this.gauzeGlowMat.opacity = this.gauzeHeat * (0.72 + 0.08 * Math.sin(tSec * 19));
+
     if (s.heatLvl > 0) {
       busy = true;
       this.flameGroup.visible = true;
-      const scaleH = [0, 0.72, 1.05, 1.42][s.heatLvl] || 1;
-      const flicker = 1 + 0.09 * Math.sin(tSec * 21) + 0.05 * Math.sin(tSec * 37);
-      const sway = 0.06 * Math.sin(tSec * 8.5) + 0.03 * Math.cos(tSec * 14.2);
-      this.flameGroup.scale.set(0.9 + 0.1 * scaleH, scaleH * flicker, 0.9 + 0.1 * scaleH);
-      this.flameGroup.rotation.z = sway;
-      this.flameClipPlane.constant = vesselY - 0.01;
+      this.snufferCap.position.set(0.54, 0.12, 0.16);
+      this.snufferCap.rotation.set(0, 0, 0);
 
-      const tinted = ts < this.flameTint.until && this.flameTint.color;
-      this.flameOuter.material.color.set(tinted ? this.flameTint.color : '#ff5d00');
-      this.flameMid.material.color.set(tinted ? this.flameTint.color : '#ffb703');
-      this.flameLight.color.set(tinted ? this.flameTint.color : '#ff9e44');
-      this.flameLight.intensity = (1.6 + s.heatLvl * 0.75) * flicker;
+      const scaleH = [0, 0.68, 1.00, 1.34][s.heatLvl] || 1;
+      const scaleR = [0, 0.84, 1.02, 1.18][s.heatLvl] || 1;
+      const flicker = 1 + 0.075 * Math.sin(tSec * 19.3) + 0.045 * Math.sin(tSec * 33.7) + 0.03 * Math.cos(tSec * 47.1);
+      this.flameGroup.scale.set(scaleR, scaleH, scaleR);
+
+      const tinted = ts < this.flameTint.until && !!this.flameTint.color;
+      const u = this.flameShaderMat.uniforms;
+      const capY = vesselY - (kind === 'tube' ? 0.005 : 0.014);
+      u.uTime.value = tSec;
+      u.uPower.value = 0.75 + s.heatLvl * 0.24;
+      u.uFlicker.value = flicker;
+      u.uCapWorldY.value = capY;
+      if (tinted) {
+        u.uTint.value.lerp(new THREE.Color(this.flameTint.color), Math.min(1, dt * 10));
+        u.uTintMix.value = Math.min(0.92, u.uTintMix.value + dt * 5.0);
+      } else {
+        u.uTintMix.value = Math.max(0.0, u.uTintMix.value - dt * 2.5);
+      }
+
+      const uM = this.flameMidMat.uniforms;
+      uM.uTime.value = tSec * 1.28 + 1.9;
+      uM.uPower.value = (0.65 + s.heatLvl * 0.2) * 0.9;
+      uM.uFlicker.value = 1 + 0.09 * Math.cos(tSec * 25.1);
+      uM.uCapWorldY.value = capY;
+      uM.uTint.value.copy(u.uTint.value);
+      uM.uTintMix.value = u.uTintMix.value * 0.85;
+
+      const activeColor = u.uTintMix.value > 0.2 ? u.uTint.value : new THREE.Color('#ff9329');
+      this.flameHaloMat.color.copy(activeColor);
+      this.flameHaloMat.opacity = (0.17 + s.heatLvl * 0.05) * flicker;
+      this.flameHalo.scale.set(0.58 * scaleR, 0.68 * scaleH * flicker, 1);
+
+      // Живое подрагивание источника света от пламени
+      this.flameLight.color.copy(activeColor);
+      this.flameLight.position.set(
+        this.vesselX + 0.02 * Math.sin(tSec * 14),
+        0.92 + 0.08 * scaleH,
+        0.22 + 0.015 * Math.cos(tSec * 11)
+      );
+      this.flameLight.intensity = (1.55 + s.heatLvl * 0.78) * flicker;
+
+      if ((s.heatLvl === 3 || tinted) && Math.random() < (tinted ? 0.16 : 0.05)) {
+        this._spawnSparks(
+          this.vesselX,
+          0.88 + 0.12 * scaleH,
+          0,
+          1,
+          tinted ? this.flameTint.color : '#fde047',
+          0.45
+        );
+      }
     } else {
       this.flameGroup.visible = false;
-      this.flameLight.intensity = 0;
+      this.flameLight.intensity = this.emberHeat * 0.25;
+      // Когда фитиль полностью остыл — колпачок закрывает спиртовку
+      if (this.emberHeat < 0.08) {
+        this.snufferCap.position.set(0, 0.66, 0);
+      }
     }
 
     // Затухание вспышек (хлопок H₂, вспышка Mg)
@@ -1505,20 +1954,18 @@ export class Lab3DScene {
       this.troughBubbleInst.count = 0;
     }
 
-    // 7. Пар и бурый газ над горлышком
+    // 7. Пар, бурый газ и струйки дыма горения
     const mouthY = vesselY + this._mouthHeight(kind);
     const emitPlume = (a.wet && s.temp > 72 && !s.tubeOn) || (s.headspace?.gas === 'NO2' && !s.tubeOn);
     if (emitPlume && Math.random() < 0.25) {
-      const free = this.steamClouds.find((c) => c.life <= 0);
-      if (free) {
-        free.life = 1.0;
-        free.x = this.vesselX + (Math.random() - 0.5) * 0.08;
-        free.y = mouthY + 0.03;
-        free.z = (Math.random() - 0.5) * 0.08;
-        free.vx = (Math.random() - 0.5) * 0.08;
-        free.size = 0.16 + Math.random() * 0.08;
-        free.color = s.headspace?.gas === 'NO2' ? '#b45309' : '#f1f5f9';
-      }
+      this._spawnSmokePuff(
+        this.vesselX,
+        mouthY + 0.03,
+        0,
+        s.headspace?.gas === 'NO2' ? '#b45309' : '#f1f5f9',
+        0.16 + Math.random() * 0.08,
+        0.42
+      );
     }
     for (const c of this.steamClouds) {
       if (c.life <= 0) {
@@ -1527,8 +1974,8 @@ export class Lab3DScene {
       }
       busy = true;
       c.life -= dt * 0.52;
-      c.y += dt * 0.42;
-      c.x += c.vx * dt;
+      c.y += dt * (c.vy || 0.42);
+      c.x += c.vx * dt + Math.sin(tSec * 4.5 + c.y * 5) * 0.025 * dt;
       const prog = 1 - Math.max(0, c.life);
       const sc = c.size * (1 + prog * 2.2);
       c.sprite.visible = true;
@@ -1536,6 +1983,30 @@ export class Lab3DScene {
       c.sprite.scale.set(sc, sc, 1);
       c.sprite.material.color.set(c.color);
       c.sprite.material.opacity = Math.sin(Math.min(1, c.life) * Math.PI) * 0.34;
+    }
+
+    // 7б. Полёт и остывание искр горения
+    for (const sp of this.sparks) {
+      if (sp.life <= 0) {
+        sp.sprite.visible = false;
+        continue;
+      }
+      busy = true;
+      sp.life -= dt;
+      sp.vy -= 0.85 * dt; // лёгкая гравитация после выброса
+      sp.vx *= Math.pow(0.25, dt);
+      sp.vz *= Math.pow(0.25, dt);
+      sp.x += (sp.vx + 0.12 * Math.sin(tSec * 14 + sp.y * 9)) * dt;
+      sp.y += sp.vy * dt;
+      sp.z += sp.vz * dt;
+
+      const lifeFrac = Math.max(0, sp.life / sp.maxLife);
+      sp.sprite.visible = true;
+      sp.sprite.position.set(sp.x, sp.y, sp.z);
+      const sc = sp.size * (0.45 + 0.75 * lifeFrac);
+      sp.sprite.scale.set(sc, sc, 1);
+      sp.sprite.material.color.set(sp.color).lerp(new THREE.Color('#ffffff'), lifeFrac * 0.45);
+      sp.sprite.material.opacity = Math.min(1, lifeFrac * 1.35);
     }
 
     // 8. Анимация наливания реактива из склянки
@@ -1567,7 +2038,7 @@ export class Lab3DScene {
       }
     }
 
-    // 9. Анимация лучины / нихромовой петли / щипцов
+    // 9. Реалистичное горение и накал на инструментах (лучина, нихромовая петля, тигельные щипцы)
     if (this.toolAnim.kind) {
       busy = true;
       this.toolAnim.t += dt;
@@ -1575,23 +2046,136 @@ export class Lab3DScene {
       if (p >= 1) {
         this.toolAnim.kind = '';
         this.propGroup.visible = false;
+        this.h2PopMesh.visible = false;
       } else {
         this.propGroup.visible = true;
+        const k = this.toolAnim.kind;
+        const ex = this.toolAnim.extra || {};
+        this.splintGroup.visible = k === 'splint';
+        this.loopGroup.visible = k === 'loop';
+        this.tongsGroup.visible = k === 'tongs';
+
         const swing = Math.sin(p * Math.PI);
-        if (this.toolAnim.kind === 'splint') {
+
+        if (k === 'splint') {
           const tx = s.tubeOn ? 1.55 : this.vesselX;
-          const ty = s.tubeOn ? 1.52 : mouthY + 0.06;
-          this.propGroup.position.set(tx + (1 - swing) * 0.45, ty + (1 - swing) * 0.25, 0.08);
-          this.propTipFlame.visible = !(this.toolAnim.extra.extinguish && p > 0.45);
-          this.propTipFlame.material.color.set(this.toolAnim.extra.flare ? '#ffffff' : '#ffae34');
-          const sc = this.toolAnim.extra.flare && p > 0.35 ? 2.1 : 1.0;
-          this.propTipFlame.scale.set(0.8 * sc, 1.7 * sc, 0.8 * sc);
-        } else if (this.toolAnim.kind === 'loop' || this.toolAnim.kind === 'tongs') {
-          this.propGroup.position.set(this.vesselX + (1 - swing) * 0.5, 0.92, 0.08);
-          this.propTipFlame.visible = true;
-          this.propTipFlame.material.color.set(this.toolAnim.extra.color || '#ffffff');
-          const sc = this.toolAnim.kind === 'tongs' ? 2.2 : 1.3;
-          this.propTipFlame.scale.set(sc, sc * 1.4, sc);
+          const ty = s.tubeOn ? 1.52 : mouthY + 0.05;
+          const px = tx + (1 - swing) * 0.42;
+          const py = ty + (1 - swing) * 0.24;
+          this.propGroup.position.set(px, py, 0.08);
+
+          const snuffed = !!ex.extinguish && p > 0.40;
+          const isH2Pop = ex.flashColor === '#60a5fa';
+          const isO2Flare = !!ex.flare && !isH2Pop;
+
+          this.splintFlameMesh.visible = !snuffed;
+          const uS = this.splintFlameMat.uniforms;
+          uS.uTime.value = tSec * 1.15;
+          uS.uFlicker.value = 0.92 + 0.14 * Math.sin(tSec * 27);
+          uS.uPower.value = isO2Flare && p > 0.30 ? 1.5 : 0.85;
+          uS.uTint.value.set(isO2Flare && p > 0.30 ? '#fef08a' : '#ff9e2c');
+          uS.uTintMix.value = isO2Flare && p > 0.30 ? 0.82 : 0.0;
+
+          const flareScale = isO2Flare && p > 0.32 ? 1.95 + 0.28 * Math.sin(tSec * 35) : (isH2Pop && p > 0.34 && p < 0.55 ? 0.35 : 1.0);
+          this.splintFlameMesh.scale.set(flareScale * 0.95, flareScale * 1.15, flareScale * 0.95);
+          this.splintEmberMat.emissiveIntensity = snuffed
+            ? Math.max(0.15, 2.0 * (1 - (p - 0.40) / 0.60))
+            : (isO2Flare && p > 0.32 ? 3.2 : 1.4);
+
+          // Эффекты в момент контакта с газом (p ≈ 0.36)
+          if (p > 0.34 && !this.toolAnim.burstDone) {
+            this.toolAnim.burstDone = true;
+            if (isO2Flare) {
+              this._spawnSparks(px, py + 0.06, 0.08, 20, '#fde047', 1.15);
+            } else if (isH2Pop) {
+              this._spawnSparks(tx, ty, 0.04, 12, '#93c5fd', 1.25);
+              this._spawnSmokePuff(tx, ty + 0.04, 0, '#e0f2fe', 0.22, 0.35);
+            } else if (ex.extinguish) {
+              this._spawnSmokePuff(px, py + 0.03, 0.08, '#cbd5e1', 0.11, 0.30);
+              this._spawnSmokePuff(px + 0.02, py + 0.06, 0.08, '#94a3b8', 0.13, 0.34);
+            }
+          }
+          if (snuffed && Math.random() < 0.22) {
+            this._spawnSmokePuff(px, py + 0.02, 0.08, '#cbd5e1', 0.09, 0.28);
+          }
+
+          // Волна хлопка водорода H₂
+          if (isH2Pop && p > 0.32 && p < 0.66) {
+            const kp = (p - 0.32) / 0.34;
+            this.h2PopMesh.visible = true;
+            this.h2PopMesh.position.set(tx, ty, 0.04);
+            this.h2PopMesh.scale.setScalar(0.6 + kp * 3.4);
+            this.h2PopMat.opacity = (1 - kp) * 0.55;
+          } else {
+            this.h2PopMesh.visible = false;
+          }
+        } else if (k === 'loop') {
+          this.h2PopMesh.visible = false;
+          const px = this.vesselX + (1 - swing) * 0.46;
+          const py = 0.90 + (1 - swing) * 0.12;
+          this.propGroup.position.set(px, py, 0.05);
+          // Нихромовая петля раскаляется докрасна при входе в пламя
+          const glow = Math.pow(swing, 1.4);
+          this.loopWireMat.emissive.set(ex.color || '#ff5d00');
+          this.loopWireMat.emissiveIntensity = glow * 2.4;
+          if (swing > 0.72 && Math.random() < 0.28) {
+            this._spawnSparks(px, py + 0.04, 0.05, 1, ex.color || '#ffb703', 0.6);
+          }
+        } else if (k === 'tongs') {
+          this.h2PopMesh.visible = false;
+          const isClBurn = !!ex.clBurn;
+          const targetY = isClBurn ? vesselY + 0.38 : 0.94;
+          const px = this.vesselX + (1 - swing) * 0.52;
+          const py = targetY + (1 - swing) * 0.32;
+          this.propGroup.position.set(px, py, 0.06);
+
+          const isMg = ex.metal === 'mg';
+          const isCu = ex.metal === 'cu';
+          const heat = Math.min(1, swing * 1.35);
+
+          // Изменение цвета самого образца: Mg белеет в пепел, Cu чернеет оксидом CuO
+          if (isMg) {
+            this.tongsSampleMat.color.set(p > 0.55 ? '#f8fafc' : '#cbd5e1');
+            this.tongsSampleMat.emissive.set('#ffffff');
+            this.tongsSampleMat.emissiveIntensity = p > 0.24 && p < 0.84 ? 3.5 : heat * 0.6;
+          } else if (isCu) {
+            this.tongsSampleMat.color.set(p > 0.52 ? '#1c1917' : '#c8753c');
+            this.tongsSampleMat.emissive.set(isClBurn ? '#f97316' : '#ef4444');
+            this.tongsSampleMat.emissiveIntensity = heat * (isClBurn ? 2.2 : 1.35);
+          } else {
+            this.tongsSampleMat.color.set('#57534e');
+            this.tongsSampleMat.emissive.set('#f97316');
+            this.tongsSampleMat.emissiveIntensity = heat * 2.1;
+          }
+
+          // Ослепительное пламя магния или вспышка в хлоре
+          const showSampleFlame = (isMg && p > 0.22 && p < 0.86) || (isClBurn && p > 0.26 && p < 0.82);
+          this.tongsFlameMesh.visible = showSampleFlame;
+          if (showSampleFlame) {
+            const uT = this.tongsFlameMat.uniforms;
+            uT.uTime.value = tSec * 1.4;
+            uT.uFlicker.value = 0.9 + 0.25 * Math.sin(tSec * 38);
+            uT.uPower.value = 1.4;
+            uT.uTint.value.set(isMg ? '#ffffff' : '#f97316');
+            uT.uTintMix.value = 0.95;
+            const fSc = isMg ? 1.55 : 1.15;
+            this.tongsFlameMesh.scale.set(fSc, fSc * 1.25, fSc);
+          }
+
+          this.tongsGlareSprite.visible = isMg && p > 0.22 && p < 0.86;
+          if (this.tongsGlareSprite.visible) {
+            const pulse = 0.85 + 0.22 * Math.sin(tSec * 44);
+            this.tongsGlareMat.opacity = 0.82 * Math.sin(((p - 0.22) / 0.64) * Math.PI);
+            this.tongsGlareSprite.scale.set(1.05 * pulse, 1.05 * pulse, 1);
+          }
+
+          if (isMg && p > 0.25 && p < 0.80) {
+            if (Math.random() < 0.55) this._spawnSparks(px, py + 0.03, 0.06, 2, '#ffffff', 1.15);
+            if (Math.random() < 0.30) this._spawnSmokePuff(px, py + 0.08, 0.06, '#f8fafc', 0.16, 0.44);
+          } else if (isClBurn && p > 0.28 && p < 0.80) {
+            if (Math.random() < 0.50) this._spawnSparks(px, py, 0.04, 2, '#fb923c', 0.95);
+            if (Math.random() < 0.35) this._spawnSmokePuff(px, py + 0.06, 0.04, '#b45309', 0.19, 0.36);
+          }
         }
       }
     }
