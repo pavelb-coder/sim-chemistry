@@ -21,12 +21,56 @@
 - **Процедурный звук (`src/audio.js`)**: синтез всех звуков на Web Audio API без внешних аудиофайлов.
 - **Лабораторный отчёт (`src/report.js`)**: формирование и скачивание протокола `.html` / печать в PDF со встроенным снимком 3D-сцены, а также экспорт/импорт файлов опытов `.chemlab.json`.
 
-## Быстрый старт
+## Быстрый старт (Windows и Ubuntu / Linux)
 
-Проект не требует сборки и внешних зависимостей — достаточно Node.js 18+:
+Проект **не требует `npm install`, сборки и внешних зависимостей** — все модули (включая Three.js `0.170.0`) уже включены локально в папку `vendor/`. Важно открывать лабораторию через локальный HTTP-сервер (`http://localhost:8081`), а не двойным кликом по `index.html` (`file://`), так как браузеры загружают ES-модули только по HTTP/HTTPS.
 
-```bash
-npm start
-```
+### 1. Запуск на Windows 10 / 11
 
-После запуска откройте в браузере `http://localhost:8081` (также можно развернуть как статический сайт на GitHub Pages — точка входа `index.html`).
+1. Убедитесь, что установлен **Node.js 18+** (проверка в PowerShell/CMD: `node -v`). Если не установлен:
+   ```powershell
+   winget install OpenJS.NodeJS.LTS
+   ```
+   *(либо скачайте LTS-установщик с [nodejs.org](https://nodejs.org/) — также поддерживается резервный запуск через Python).*
+2. Скачайте или клонируйте репозиторий:
+   ```powershell
+   git clone https://github.com/pavelb-coder/sim-chemistry.git
+   cd sim-chemistry
+   ```
+3. **Запуск в 1 клик**: дважды кликните по файлу **`start-windows.bat`** — сервер поднимется на порту `8081` и автоматически откроет `http://localhost:8081` в браузере.
+   *Либо вручную из терминала PowerShell / CMD:*
+   ```powershell
+   node server.js --open
+   ```
+   *(Сменить порт при необходимости: `$env:PORT=8090; node server.js --open` в PowerShell или `set PORT=8090 && node server.js` в CMD).*
+
+---
+
+### 2. Запуск на Ubuntu / Debian Linux
+
+1. Установите `git` и `nodejs` (если ещё не установлены):
+   ```bash
+   sudo apt update && sudo apt install -y git nodejs
+   ```
+2. Клонируйте репозиторий и запустите скрипт:
+   ```bash
+   git clone https://github.com/pavelb-coder/sim-chemistry.git
+   cd sim-chemistry
+   ./start-ubuntu.sh
+   ```
+   *Либо напрямую через Node.js:*
+   ```bash
+   node server.js          # сервер на http://0.0.0.0:8081
+   PORT=8090 node server.js # запуск на другом порту
+   ```
+   После запуска откройте в браузере **`http://localhost:8081`** (или `http://<IP-адрес-ПК>:8081` с любого устройства в локальной сети класса/лаборатории; если включён файрвол `ufw`, откройте порт командой `sudo ufw allow 8081/tcp`).
+
+---
+
+### Альтернатива без Node.js (через Python 3)
+
+Если на школьном/учебном компьютере нет Node.js, но есть Python 3:
+- **Ubuntu / Linux**: `python3 -m http.server 8081`
+- **Windows**: `python -m http.server 8081` (или `py -m http.server 8081`)
+
+Затем откройте `http://localhost:8081`.

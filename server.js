@@ -2,10 +2,11 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const { exec } = require('child_process');
 
 const PORT = Number(process.env.PORT) || 8081;
-const HOST = '0.0.0.0';
-const ROOT = __dirname;
+const HOST = process.env.HOST || '0.0.0.0';
+const ROOT = path.resolve(__dirname);
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -28,8 +29,10 @@ const server = http.createServer((req, res) => {
     let relPath = decodeURIComponent(parsed.pathname);
     if (relPath === '/' || relPath === '/lab.html') relPath = '/index.html';
 
-    const safePath = path.normalize(path.join(ROOT, relPath));
-    if (!safePath.startsWith(ROOT)) {
+    const cleanRel = relPath.replace(/^[/\\]+/, '');
+    const safePath = path.resolve(ROOT, cleanRel);
+    const relFromRoot = path.relative(ROOT, safePath);
+    if (relFromRoot.startsWith('..') || path.isAbsolute(relFromRoot)) {
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Forbidden');
       return;
@@ -82,5 +85,15 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`ХимЛаб 3D сервер запущен на http://${HOST}:${PORT}`);
+  const localUrl = `http://localhost:${PORT}`;
+  console.log(`ХимЛаб 3D сервер запущен на http://${HOST}:${PORT} (локально: ${localUrl})`);
+  if (process.argv.includes('--open')) {
+    if (process.platform === 'win32') {
+      exec(`cmd /c start "" "${localUrl}"`);
+    } else if (process.platform === 'darwin') {
+      exec(`open "${localUrl}"`);
+    } else if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY) {
+      exec(`xdg-open "${localUrl}" >/dev/null 2>&1 || true`);
+    }
+  }
 });
