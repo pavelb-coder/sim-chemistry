@@ -175,13 +175,57 @@ export class SoundEngine {
       osc.connect(g).connect(this.master);
       osc.start(now);
       osc.stop(now + 0.05);
+    } else if (kind === 'transfer') {
+      // Мягкий шорох переноса сосуда между столами + лёгкое касание столешницы
+      const src = this.ctx.createBufferSource();
+      src.buffer = this._noise();
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(340, now);
+      bp.frequency.exponentialRampToValueAtTime(780, now + 0.16);
+      bp.frequency.exponentialRampToValueAtTime(290, now + 0.34);
+      bp.Q.value = 1.8;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.005, now);
+      g.gain.linearRampToValueAtTime(0.11, now + 0.12);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
+      src.connect(bp).connect(g).connect(this.master);
+      src.start(now);
+      src.stop(now + 0.38);
+
+      const osc = this.ctx.createOscillator();
+      const g2 = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(420, now + 0.28);
+      osc.frequency.exponentialRampToValueAtTime(185, now + 0.38);
+      g2.gain.setValueAtTime(0.08, now + 0.28);
+      g2.gain.exponentialRampToValueAtTime(0.001, now + 0.40);
+      osc.connect(g2).connect(this.master);
+      osc.start(now + 0.28);
+      osc.stop(now + 0.41);
+    } else if (kind === 'muffleDoor') {
+      // Металлический затвор дверцы муфельной печи ПМ-1000
+      [310, 165].forEach((freq, idx) => {
+        const osc = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        osc.type = 'triangle';
+        const t0 = now + idx * 0.06;
+        osc.frequency.setValueAtTime(freq, t0);
+        osc.frequency.exponentialRampToValueAtTime(freq * 0.55, t0 + 0.11);
+        g.gain.setValueAtTime(0.13, t0);
+        g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.13);
+        osc.connect(g).connect(this.master);
+        osc.start(t0);
+        osc.stop(t0 + 0.14);
+      });
     }
   }
 
-  updateLoops({ fizz = 0, flame = 0 }) {
+  updateLoops({ fizz = 0, flame = 0, furnace = 0 }) {
     if (this.muted || !this.ctx) return;
     this._setLoop('fizz', Math.min(1, fizz), 2400, 'bandpass', 0.12);
     this._setLoop('flame', Math.min(1, flame), 240, 'lowpass', 0.15);
+    this._setLoop('furnace', Math.min(1, furnace), 135, 'lowpass', 0.09);
   }
 
   _setLoop(name, level, freq, filterType, maxGain) {

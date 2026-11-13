@@ -677,12 +677,133 @@ button:focus-visible, input:focus-visible {
   font-size: 13.5px;
 }
 
+/* Навигатор перемещения между тремя лабораторными столами */
+.bench-switcher {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 13px;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.11);
+  z-index: 18;
+  max-width: calc(100% - 250px);
+}
+
+.bench-step-arrow {
+  width: 28px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #ffffff;
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.14s;
+  flex: none;
+}
+
+.bench-step-arrow:hover:not(:disabled) {
+  background: var(--brand-soft);
+  border-color: var(--brand);
+  color: var(--brand-dark);
+}
+
+.bench-step-arrow:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.bench-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: all 0.14s;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.bench-tab span {
+  font-size: 11.8px;
+  font-weight: 800;
+}
+
+.bench-tab small {
+  font-size: 9.8px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.bench-tab:hover {
+  background: var(--panel-soft);
+  color: var(--ink);
+}
+
+.bench-tab.active {
+  background: var(--brand);
+  color: #ffffff;
+  box-shadow: 0 3px 10px rgba(37, 99, 235, 0.28);
+}
+
+.bench-tab.active small {
+  color: #dbeafe;
+}
+
+/* Боковые кнопки быстрого перехода с одного стола на другой */
+.stage-walk-btn {
+  position: absolute;
+  bottom: 102px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(203, 213, 225, 0.95);
+  background: rgba(15, 23, 42, 0.78);
+  backdrop-filter: blur(8px);
+  color: #f8fafc;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  z-index: 17;
+  transition: all 0.15s ease;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
+}
+
+.stage-walk-btn.left {
+  left: 12px;
+}
+
+.stage-walk-btn.right {
+  right: 12px;
+}
+
+.stage-walk-btn:hover {
+  background: var(--brand);
+  border-color: #93c5fd;
+  transform: translateY(-1px);
+}
+
 /* Плавающая карточка «Показания приборов» */
 .gauges-card {
   position: absolute;
   top: 12px;
   left: 12px;
-  width: 236px;
+  width: 226px;
   background: rgba(255, 255, 255, 0.88);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -739,10 +860,10 @@ button:focus-visible, input:focus-visible {
   transition: left 0.25s ease;
 }
 
-/* Плашка ТБ и наблюдений сверху по центру */
+/* Плашка ТБ и наблюдений под переключателем столов */
 .stage-alerts {
   position: absolute;
-  top: 12px;
+  top: 64px;
   right: 12px;
   display: flex;
   flex-direction: column;
@@ -877,6 +998,19 @@ button:focus-visible, input:focus-visible {
   background: #fff7ed;
   border-color: #fb923c;
   color: #c2410c;
+}
+
+.dock-action.hotplate-on {
+  background: #fff7ed;
+  border-color: #f97316;
+  color: #9a3412;
+}
+
+.dock-action.muffle-on {
+  background: #fef2f2;
+  border-color: #ef4444;
+  color: #b91c1c;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.15);
 }
 
 .dock-action.ice-on {
@@ -1330,6 +1464,15 @@ button:focus-visible, input:focus-visible {
 }
 
 /* ── Адаптивность для планшетов и небольших экранов ── */
+@media (max-width: 1260px) {
+  .bench-tab small {
+    display: none;
+  }
+  .bench-step-arrow {
+    height: 30px;
+  }
+}
+
 @media (max-width: 1180px) {
   .workspace {
     grid-template-columns: 260px minmax(0, 1fr) 290px;

@@ -1,4 +1,4 @@
-import { REAGENTS } from './reagents.js?v=2.1.1';
+import { REAGENTS } from './reagents.js?v=2.2.1';
 
 const ION_LABELS = {
   Li: ['Li⁺', '#fb7185'],

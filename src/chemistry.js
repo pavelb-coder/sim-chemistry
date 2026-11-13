@@ -1,4 +1,4 @@
-import { REAGENTS, FLAME_COLORS } from './reagents.js?v=2.1.1';
+import { REAGENTS, FLAME_COLORS } from './reagents.js?v=2.2.1';
 
 export const VESSELS = {
   flask: {
@@ -49,8 +49,26 @@ export const VESSELS = {
     glassHeatCap: 9.5,
     allowTube: false,
     evapFactor: 3.2,
-    dryMaxBoost: 155
+    dryMaxBoost: 155,
+    muffleSafe: true
+  },
+  crucible: {
+    id: 'crucible',
+    name: 'Фарфоровый тигель (термостойкий)',
+    short: 'Тигель 40 мл',
+    cap: 40,
+    glassHeatCap: 7.0,
+    allowTube: false,
+    evapFactor: 2.3,
+    dryMaxBoost: 230,
+    muffleSafe: true
   }
+};
+
+export const BENCHES = {
+  1: { id: 1, name: 'Стол 1: Горелка и газы', short: 'Стол 1 · Горелка', subtitle: 'спиртовка, штатив Бунзена и газометр', x: 0 },
+  2: { id: 2, name: 'Стол 2: Мешалка-плитка и анализ', short: 'Стол 2 · Термомешалка', subtitle: 'магнитная мешалка с подогревом, весы и фильтр', x: 5.0 },
+  3: { id: 3, name: 'Стол 3: Муфельная печь и ток', short: 'Стол 3 · Муфельная печь', subtitle: 'муфельная печь ПМ-1000 и электролизёр DC 12 В', x: -5.0 }
 };
 
 export const GAS_INFO = {
@@ -70,11 +88,14 @@ export const GAS_INFO = {
 export function createInitialLabState(vessel = 'flask') {
   return {
     vessel,
+    bench: 1,
     amt: {},
     addedOrder: [],
     prog: {},
     temp: 22.0,
     heatLvl: 0,
+    hotplateLvl: 0,
+    muffleLvl: 0,
     iceBathOn: false,
     stirrerOn: false,
     buretteOn: false,
@@ -124,7 +145,11 @@ export function createInitialLabState(vessel = 'flask') {
       titrated: false,
       filtered: false,
       crystallizedSalt: false,
-      iceCooled: false
+      iceCooled: false,
+      calcinedCaCO3: false,
+      slakedLime: false,
+      benchMoved: false,
+      hotplateUsed: false
     },
     simTime: 0
   };
@@ -268,7 +293,13 @@ export function analyzeChemistry(state) {
     }
 
     if (r.basicOxide) {
-      if (r.slightBase && wet) {
+      if (r.quicklime && wet) {
+        // Негашёная известь CaO бурно гасится водой: CaO + H₂O → Ca(OH)₂
+        const slaked = q * 0.85;
+        baseEq += slaked;
+        strongBaseEq += slaked;
+        addCat('Ca', slaked);
+      } else if (r.slightBase && wet) {
         const sl = Math.min(0.28, q * r.slightBase);
         baseEq += sl;
         addCat(r.basicOxide, sl);
@@ -279,6 +310,15 @@ export function analyzeChemistry(state) {
         strongAcidEq = Math.max(0, strongAcidEq - reacted);
         addCat(r.basicOxide, reacted);
       }
+    }
+
+    if (id === 'caco3' && (prog.calcine_caco3 || 0) > 0.1 && wet) {
+      // Обожжённый в муфельной печи мрамор (CaCO₃ → CaO) при добавлении воды гасится в Ca(OH)₂!
+      const calcFrac = Math.min(1, prog.calcine_caco3 || 0);
+      const slakedFromCalcine = q * calcFrac * 0.85;
+      baseEq += slakedFromCalcine;
+      strongBaseEq += slakedFromCalcine;
+      addCat('Ca', slakedFromCalcine);
     }
 
     if (r.solidCarbonate && p > 0) {
@@ -786,12 +826,20 @@ export function analyzeChemistry(state) {
       if ((amt.cac2 || 0) > 0 && (prog.cac2 || 0) > 0.35) {
         pushPr('Ca(OH)₂', 'белая взвесь гашёной извести (гидролиз CaC₂)', '#f1f5f9', 0.75);
       }
+      if (((amt.cao || 0) >= 1 || ((amt.caco3 || 0) >= 1 && (prog.calcine_caco3 || 0) > 0.45)) && pH >= 11.0) {
+        pushPr('Ca(OH)₂', 'известковое молоко — взвесь гашёной извести', '#f8fafc', 0.65);
+      }
     }
 
     // Оксид меди(I) при нагревании глюкозы с Cu(OH)₂
     if ((prog.cu2o || 0) >= 0.45) {
       pushPr('Cu₂O', 'кирпично-красный осадок оксида меди(I)', '#dc2626', 0.9);
     }
+  }
+
+  // Продукт обжига известняка в муфельной печи при ≥ 800 °C
+  if (!wet && (amt.caco3 || 0) > 0 && (prog.calcine_caco3 || 0) >= 0.45) {
+    pushPr('CaO', 'негашёная известь (продукт обжига CaCO₃ в муфельной печи)', '#fefce8', 0.9);
   }
 
   // Обугливание сахарозы конц. серной кислотой и «химический вулкан» Cr₂O₃
@@ -998,10 +1046,14 @@ export function analyzeChemistry(state) {
   }
 
   const warnings = [];
+  const curVesselInfo = VESSELS[state.vessel] || VESSELS.flask;
   if (concH2SO4 || concHNO3) warnings.push('Работа с концентрированными кислотами: защитные очки и перчатки обязательны');
   if (state.headspace?.gas === 'NO2' || state.headspace?.gas === 'Cl2' || freeBromine > 0.02) warnings.push('Токсичные пары галогена / оксидов азота — работать в вытяжном шкафу');
   if ((amt.k || 0) > 0 || (amt.na || 0) > 0) warnings.push('Щелочной металл: беречь от попадания брызг, работать за экраном');
   if ((amt.phenol || 0) > 0) warnings.push('Фенол ядовит и вызывает ожоги кожи — работать в перчатках');
+  if (!curVesselInfo.muffleSafe && (state.temp > 560 || state.muffleLvl > 0)) {
+    warnings.push('ТБ: Стекло размягчается при T > 560 °C! Для муфельной печи используйте фарфоровый тигель или чашку');
+  }
 
   // 11. Катионы для окрашивания пламени (нихромовая петля)
   const flameCations = Object.keys(FLAME_COLORS).filter((c) => (cations[c] || 0) > 0.03);
@@ -1011,7 +1063,12 @@ export function analyzeChemistry(state) {
   for (const [id, q] of Object.entries(amt)) {
     if (q > 0 && REAGENTS[id]?.state === 's') {
       const p = Math.min(1, prog[id] || 0);
-      solidMassG += q * 2.45 * (1 - p * 0.25);
+      let mItem = q * 2.45 * (1 - p * 0.25);
+      // При обжиге известняка CaCO₃ → CaO + CO₂↑ масса уменьшается на 44 % за счёт улетевшего CO₂
+      if (id === 'caco3' && (prog.calcine_caco3 || 0) > 0) {
+        mItem *= (1 - 0.44 * Math.min(1, prog.calcine_caco3));
+      }
+      solidMassG += mItem;
     }
   }
   const liqDensity = concH2SO4 ? 1.78 : (concHNO3 ? 1.38 : 1.03);
@@ -1068,10 +1125,37 @@ export function stepSimulation(state, dt, speedX = 1) {
   const prog = state.prog;
   const vInfo = VESSELS[state.vessel] || VESSELS.flask;
 
-  // 1. Тепловой баланс (нагрев спиртовкой, ледяная баня 2 °C или остывание по Ньютону)
+  // 1. Тепловой баланс (муфельная печь до 950 °C, плитка магнитной мешалки, спиртовка, ледяная баня 2 °C или остывание)
   const heatCap = computeHeatCapacity(state);
   const targetAmbient = state.iceBathOn ? 2.0 : 22.0;
-  if (state.heatLvl > 0 && !state.iceBathOn) {
+  if ((state.muffleLvl || 0) > 0 && !state.iceBathOn) {
+    // Муфельная печь ПМ-1000: Режим 1 = 600 °C, Режим 2 = 950 °C
+    const muffleTarget = [22, 600, 950][state.muffleLvl] || 600;
+    if (wet) {
+      const power = state.muffleLvl === 2 ? 320 : 210;
+      const loss = (state.temp - 22.0) * 0.35;
+      state.temp += ((power - loss) / Math.max(5, heatCap)) * effDt * 4.5;
+      if (state.temp > 100.4) state.temp = 100.4;
+    } else {
+      state.temp += (muffleTarget - state.temp) * Math.min(1, effDt * 0.34);
+    }
+  } else if ((state.hotplateLvl || 0) > 0 && !state.iceBathOn) {
+    // Нагревательная платформа магнитной мешалки: 1 = 62 °C (термостат), 2 = 125 °C (кипячение), 3 = 260 °C
+    const plateTarget = [22, 62, 125, 260][state.hotplateLvl] || 62;
+    state.seen.hotplateUsed = true;
+    if (wet) {
+      const liqCeil = Math.min(100.2, plateTarget);
+      if (state.temp < liqCeil) {
+        const power = [0, 48, 95, 155][state.hotplateLvl] || 48;
+        const loss = (state.temp - 22.0) * 0.38;
+        state.temp = Math.min(liqCeil, state.temp + ((power - loss) / Math.max(5, heatCap)) * effDt * 4.0);
+      } else {
+        state.temp += (liqCeil - state.temp) * Math.min(1, effDt * 0.35);
+      }
+    } else {
+      state.temp += (plateTarget - state.temp) * Math.min(1, effDt * 0.25);
+    }
+  } else if (state.heatLvl > 0 && !state.iceBathOn) {
     if (wet) {
       // Мощность спиртовки: в пробирке закипает быстро, в стакане — плавно
       const power = [0, 38, 82, 145][state.heatLvl] || 0;
@@ -1079,13 +1163,13 @@ export function stepSimulation(state, dt, speedX = 1) {
       state.temp += ((power - loss) / Math.max(5, heatCap)) * effDt * 4.2;
       if (state.temp > 100.2) state.temp = 100.2;
     } else {
-      // Сухой нагрев (до ~370 °C в стекле и до ~525 °C в фарфоровой чашке)
+      // Сухой нагрев (до ~370 °C в стекле и до ~525–600 °C в фарфоровой посуде)
       const boost = vInfo.dryMaxBoost || 0;
       const dryMax = [22, 165 + boost * 0.5, 275 + boost * 0.8, 370 + boost][state.heatLvl];
       state.temp += (dryMax - state.temp) * Math.min(1, effDt * 0.24);
     }
   } else {
-    const coolRate = state.iceBathOn ? 0.28 : (wet ? 0.055 : 0.085);
+    const coolRate = state.iceBathOn ? 0.28 : (wet ? 0.055 : 0.095);
     state.temp += (targetAmbient - state.temp) * Math.min(1, effDt * coolRate * 2.2);
     if (Math.abs(state.temp - targetAmbient) < 0.08) state.temp = targetAmbient;
     if (state.iceBathOn && state.temp <= 8.0 && !state.seen.iceCooled) {
@@ -1543,6 +1627,25 @@ export function stepSimulation(state, dt, speedX = 1) {
         events.push('Возгонка NH₄Cl: кристаллы со дна испарились и осели белым кольцом у холодного горлышка');
       }
     }
+    // Высокотемпературный обжиг известняка (мрамора) CaCO₃ → CaO + CO₂↑ (идёт ТОЛЬКО при T ≥ 780 °C в муфельной печи!)
+    if ((amt.caco3 || 0) > 0 && state.temp >= 780 && (prog.calcine_caco3 || 0) < 1) {
+      const rate = 0.12 * effDt * (1 + (state.temp - 780) / 180);
+      prog.calcine_caco3 = Math.min(1, (prog.calcine_caco3 || 0) + rate);
+      emitGas('CO2', 20 * effDt);
+      if (prog.calcine_caco3 >= 0.55 && !state.seen.calcinedCaCO3) {
+        state.seen.calcinedCaCO3 = true;
+        events.push('Обжиг в муфельной печи (≥ 800 °C): известняк CaCO₃ разложился на негашёную известь CaO и CO₂↑ (масса уменьшилась на 44 %)');
+      }
+    }
+  }
+
+  // Экзотермическое гашение извести CaO водой: CaO + H₂O → Ca(OH)₂ + Q
+  const hasActiveQuicklime = (amt.cao || 0) > 0 || ((amt.caco3 || 0) > 0 && (prog.calcine_caco3 || 0) >= 0.45);
+  if (wet && hasActiveQuicklime && !prog.slaked_heat) {
+    prog.slaked_heat = 1;
+    state.seen.slakedLime = true;
+    state.temp = Math.min(98, state.temp + 26);
+    events.push('Гашение извести! Оксид кальция CaO бурно прореагировал с водой с сильным разогреванием и образованием Ca(OH)₂');
   }
 
   // 6. Сбор газа через газоотводную трубку (вытеснением воды)
@@ -1569,9 +1672,14 @@ export function stepSimulation(state, dt, speedX = 1) {
   }
 
   // 7. Выкипание растворителя при кипении (~99–100 °C; в фарфоровой чашке идёт в 3,2 раза быстрее!)
-  const boiling = wet && state.temp >= 98.2 && state.heatLvl > 0 && !state.iceBathOn;
+  const activeHeatPower = Math.max(
+    state.heatLvl || 0,
+    (state.hotplateLvl || 0) >= 2 ? state.hotplateLvl : 0,
+    (state.muffleLvl || 0) * 2.5
+  );
+  const boiling = wet && state.temp >= 98.2 && activeHeatPower > 0 && !state.iceBathOn;
   if (boiling && volume > 0) {
-    state.evapMl = (state.evapMl || 0) + effDt * (0.16 + state.heatLvl * 0.12) * (vInfo.evapFactor || 1.0);
+    state.evapMl = (state.evapMl || 0) + effDt * (0.16 + activeHeatPower * 0.12) * (vInfo.evapFactor || 1.0);
   }
 
   // 8. Фиксация наблюдений осадков, комплексов, ОВР и кристаллизации при выпаривании досуха

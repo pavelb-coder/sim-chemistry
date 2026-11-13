@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ХимЛаб 3D — Интерактивная виртуальная лаборатория по химии</title>
-  <meta name="description" content="Интерактивная 3D виртуальная лаборатория по химии: 60+ реактивов, физико-химический расчёт pH и осадков, сбор газов, окрашивание пламени, режим «Микромир» и 16 практикумов 8–11 классов (ОГЭ/ЕГЭ).">
+  <meta name="description" content="Интерактивная 3D виртуальная лаборатория по химии: 91 реактив, 3 лабораторных стола, муфельная печь 950 °C, магнитная мешалка с подогревом, расчёт pH и осадков, сбор газов, режим «Микромир» и 30 практикумов 8–11 классов (ОГЭ/ЕГЭ).">
   <meta property="og:type" content="website">
   <meta property="og:title" content="ХимЛаб 3D — Виртуальная химическая лаборатория">
-  <meta property="og:description" content="Проводите опыты в 3D: металлы, кислоты, щёлочи, индикаторы, газы, «серебряное зеркало», лупа ионов «Микромир» и готовый лабораторный отчёт.">
+  <meta property="og:description" content="Проводите опыты в 3D на 3 столах: спиртовка, магнитная мешалка с подогревом, муфельная печь ПМ-1000, электролиз, титрование, лупа ионов «Микромир» и готовый отчёт.">
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='31' fill='%230f172a'/%3E%3Cpath d='M21 41h22l3.8 6.5a2.6 2.6 0 0 1-2.2 3.9H19.4a2.6 2.6 0 0 1-2.2-3.9z' fill='%2310b981'/%3E%3Cpath d='M27 14v12l-10 19.5a3.4 3.4 0 0 0 3 5h24a3.4 3.4 0 0 0 3-5L37 26V14' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M24 14h16' stroke='%23fff' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='29' cy='35' r='2.3' fill='%23fff'/%3E%3Ccircle cx='35.5' cy='30' r='1.7' fill='%2338bdf8'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./styles/lab.css?v=2.1.1">
+  <link rel="stylesheet" href="./styles/lab.css?v=2.2.1">
 </head>
 <body>
   <div class="app-shell">
@@ -84,7 +84,8 @@
           <button type="button" class="seg-btn" data-vessel="round" title="Круглодонная реакционная колба 150 мл">Круглодон. 150 мл</button>
           <button type="button" class="seg-btn" data-vessel="tube" title="Химическая пробирка 25 мл в лапке штатива">Пробирка 25 мл</button>
           <button type="button" class="seg-btn" data-vessel="beaker" title="Химический стакан 200 мл">Стакан 200 мл</button>
-          <button type="button" class="seg-btn" data-vessel="evap" title="Фарфоровая выпарительная чашка 80 мл (быстрое выпаривание и прокаливание до 525 °C)">Чашка 80 мл</button>
+          <button type="button" class="seg-btn" data-vessel="evap" title="Фарфоровая выпарительная чашка 80 мл (термостойкая для выпаривания и муфеля)">Чашка 80 мл</button>
+          <button type="button" class="seg-btn" data-vessel="crucible" title="Фарфоровый тигель 40 мл (огнеупорный до 1000 °C — специально для муфельной печи)">Тигель 40 мл</button>
         </div>
 
         <div class="v-divider"></div>
@@ -105,9 +106,9 @@
           <span class="seg-label">Камера</span>
           <button type="button" class="seg-btn active" data-cam="all">Весь стол</button>
           <button type="button" class="seg-btn" data-cam="vessel">Сосуд</button>
-          <button type="button" class="seg-btn" data-cam="equip">Приборы</button>
+          <button type="button" class="seg-btn" data-cam="hall" title="Панорама всех трёх лабораторных столов зала">Все 3 стола</button>
           <button type="button" class="seg-btn" data-cam="gas">Сбор газа</button>
-          <button type="button" class="seg-btn" data-cam="lamp">Горелка</button>
+          <button type="button" class="seg-btn" data-cam="lamp">Нагреватель</button>
         </div>
 
         <div class="seg-group" id="speedGroup" role="group" aria-label="Скорость времени">
@@ -198,6 +199,32 @@
       <section class="stage-card" id="stageDropZone" aria-label="Интерактивный 3D лабораторный стол">
         <div class="stage-canvas-host" id="stage3d"></div>
 
+        <!-- Перемещение между лабораторными столами (Стол 3 ← Стол 1 → Стол 2) -->
+        <nav class="bench-switcher" id="benchSwitcher" aria-label="Перемещение между лабораторными столами">
+          <button type="button" class="bench-step-arrow" id="btnBenchPrev" title="Перейти на соседний стол слева вместе с сосудом (клавиша [ )">◀</button>
+          <button type="button" class="bench-tab" data-bench="3" title="Стол 3 (слева): Муфельная печь ПМ-1000 (до 950 °C) и электролизёр DC 12 В">
+            <span>🧱 Стол 3</span>
+            <small>Муфель · Ток</small>
+          </button>
+          <button type="button" class="bench-tab active" data-bench="1" title="Стол 1 (центр): Спиртовка, штатив Бунзена и газометр вытеснения воды">
+            <span>🔥 Стол 1</span>
+            <small>Горелка · Газы</small>
+          </button>
+          <button type="button" class="bench-tab" data-bench="2" title="Стол 2 (справа): Магнитная мешалка с подогревом, весы, бюретка и фильтрование">
+            <span>🧲 Стол 2</span>
+            <small>Термомешалка</small>
+          </button>
+          <button type="button" class="bench-step-arrow" id="btnBenchNext" title="Перейти на соседний стол справа вместе с сосудом (клавиша ] )">▶</button>
+        </nav>
+
+        <!-- Боковые кнопки быстрого перехода к соседнему столу -->
+        <button type="button" class="stage-walk-btn left" id="btnWalkLeft" title="Перенести сосуд на соседний стол слева">
+          ◀ <span id="walkLeftLabel">Стол 3</span>
+        </button>
+        <button type="button" class="stage-walk-btn right" id="btnWalkRight" title="Перенести сосуд на соседний стол справа">
+          <span id="walkRightLabel">Стол 2</span> ▶
+        </button>
+
         <!-- Показания приборов -->
         <div class="gauges-card">
           <div class="gauges-head">
@@ -255,14 +282,20 @@
 
         <!-- Нижняя панель приборов и установок на столе -->
         <div class="bench-dock" role="toolbar" aria-label="Оборудование стола">
-          <button type="button" class="dock-action" id="btnBurner" title="Переключить спиртовку (Выкл → Слабое → Среднее → Сильное пламя)">
+          <button type="button" class="dock-action" id="btnBurner" title="Спиртовка на Столе 1 (Выкл → Слабое → Среднее → Сильное пламя)">
             🔥 <span id="burnerBtnText">Спиртовка</span>
+          </button>
+          <button type="button" class="dock-action" id="btnHotplate" title="Нагрев магнитной мешалки на Столе 2 (Выкл → 60 °C → 125 °C → 260 °C)">
+            🌡️ <span id="hotplateBtnText">Плитка</span>
+          </button>
+          <button type="button" class="dock-action" id="btnMuffle" title="Муфельная печь ПМ-1000 на Столе 3 (Выкл → 600 °C → 950 °C)">
+            🧱 <span id="muffleBtnText">Муфель</span>
           </button>
           <button type="button" class="dock-action" id="btnIceBath" title="Поместить сосуд в кристаллизатор со льдом (охлаждение до +2 °C)">
             ❄️ Лёд
           </button>
-          <button type="button" class="dock-action" id="btnStirrer" title="Включить / выключить магнитную мешалку с фторопластовым якорем">
-            🌪 Мешалка
+          <button type="button" class="dock-action" id="btnStirrer" title="Включить / выключить магнитную мешалку (600 об/мин — с подогревом на Столе 2)">
+            🧲 Мешалка
           </button>
           <button type="button" class="dock-action" id="btnBurette" title="Установить / снять титровальную бюретку 25 мл над сосудом">
             💧 Бюретка
@@ -404,6 +437,6 @@
     </div>
   </div>
 
-  <script type="module" src="./src/app.js?v=2.1.1"></script>
+  <script type="module" src="./src/app.js?v=2.2.1"></script>
 </body>
 </html>

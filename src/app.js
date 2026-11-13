@@ -1,21 +1,23 @@
-import { CATEGORIES, REAGENTS, FLAME_COLORS, ACTIVITY_SERIES, PERIODIC_TABLE } from './reagents.js?v=2.1.1';
+import { CATEGORIES, REAGENTS, FLAME_COLORS, ACTIVITY_SERIES, PERIODIC_TABLE } from './reagents.js?v=2.2.1';
 import {
   VESSELS,
+  BENCHES,
   GAS_INFO,
   createInitialLabState,
   cloneLabState,
   analyzeChemistry,
   stepSimulation
-} from './chemistry.js?v=2.1.1';
-import { TASKS } from './tasks.js?v=2.1.1';
-import { SoundEngine } from './audio.js?v=2.1.1';
-import { MicroWorld } from './micro.js?v=2.1.1';
-import { Lab3DScene } from './lab3d.js?v=2.1.1';
-import { buildReportHTML } from './report.js?v=2.1.1';
-import { getReagentIconSVG, getCategoryIconSVG, getReagentHazardKind } from './icons.js?v=2.1.1';
+} from './chemistry.js?v=2.2.1';
+import { TASKS } from './tasks.js?v=2.2.1';
+import { SoundEngine } from './audio.js?v=2.2.1';
+import { MicroWorld } from './micro.js?v=2.2.1';
+import { Lab3DScene } from './lab3d.js?v=2.2.1';
+import { buildReportHTML } from './report.js?v=2.2.1';
+import { getReagentIconSVG, getCategoryIconSVG, getReagentHazardKind } from './icons.js?v=2.2.1';
 
 const STORAGE_DONE_KEY = 'chemlab3d.done.v1';
 const THEMES = ['classic', 'slate', 'warm'];
+const BENCH_ORDER = [3, 1, 2]; // пространственный порядок столов в зале слева направо (x = -5, 0, +5)
 
 class ChemLabApp {
   constructor() {
@@ -120,6 +122,13 @@ class ChemLabApp {
 
       stageDropZone: $('stageDropZone'),
       stage3d: $('stage3d'),
+      benchSwitcher: $('benchSwitcher'),
+      btnBenchPrev: $('btnBenchPrev'),
+      btnBenchNext: $('btnBenchNext'),
+      btnWalkLeft: $('btnWalkLeft'),
+      walkLeftLabel: $('walkLeftLabel'),
+      btnWalkRight: $('btnWalkRight'),
+      walkRightLabel: $('walkRightLabel'),
       envStateTag: $('envStateTag'),
       gaugeTemp: $('gaugeTemp'),
       gaugeVol: $('gaugeVol'),
@@ -141,6 +150,10 @@ class ChemLabApp {
 
       btnBurner: $('btnBurner'),
       burnerBtnText: $('burnerBtnText'),
+      btnHotplate: $('btnHotplate'),
+      hotplateBtnText: $('hotplateBtnText'),
+      btnMuffle: $('btnMuffle'),
+      muffleBtnText: $('muffleBtnText'),
       btnIceBath: $('btnIceBath'),
       btnStirrer: $('btnStirrer'),
       btnBurette: $('btnBurette'),
@@ -187,14 +200,26 @@ class ChemLabApp {
   _init3D() {
     this.scene3d = new Lab3DScene(this.dom.stage3d, {
       onObjectClick: (action) => {
-        if (action === 'vessel') this.addReagent(this.selectedReagent);
+        if (action && action.startsWith('bench:')) {
+          this.switchBench(Number(action.split(':')[1]));
+        } else if (action === 'vessel') this.addReagent(this.selectedReagent);
         else if (action === 'burner') this.toggleBurner();
-        else if (action === 'water') this.addReagent('h2o', 5);
+        else if (action === 'hotplate') this.toggleHotplate();
+        else if (action === 'muffle') this.toggleMuffle();
+        else if (action === 'stirrer') {
+          if (this.labState.bench !== 2) this.switchBench(2, true);
+          this.toggleStirrer();
+        } else if (action === 'water') this.addReagent('h2o', 5);
         else if (action === 'splint') this.runSplintTest();
         else if (action === 'buretteDrop') this.runBuretteDrop();
         else if (action === 'electrolysis') this.toggleElectrolysis();
-        else if (action === 'filter') this.runFiltration();
-        else if (action === 'weigh') this.runWeighCheck();
+        else if (action === 'filter') {
+          if (this.labState.bench !== 2) this.switchBench(2, true);
+          this.runFiltration();
+        } else if (action === 'weigh') {
+          if (this.labState.bench !== 2) this.switchBench(2, true);
+          this.runWeighCheck();
+        }
       },
       onSleepChange: () => this._updateGpuBadge()
     });
@@ -250,8 +275,34 @@ class ChemLabApp {
         this.dom.taskDropdown.classList.remove('open');
         document.querySelectorAll('.modal-backdrop.open').forEach((m) => m.classList.remove('open'));
         if (this.microOpen) this.toggleMicro(false);
+      } else if (
+        document.activeElement?.tagName !== 'INPUT' &&
+        document.activeElement?.tagName !== 'TEXTAREA' &&
+        (e.key === '[' || (e.altKey && e.key === 'ArrowLeft'))
+      ) {
+        e.preventDefault();
+        this.stepBench(-1);
+      } else if (
+        document.activeElement?.tagName !== 'INPUT' &&
+        document.activeElement?.tagName !== 'TEXTAREA' &&
+        (e.key === ']' || (e.altKey && e.key === 'ArrowRight'))
+      ) {
+        e.preventDefault();
+        this.stepBench(1);
       }
     });
+
+    // Перемещение между лабораторными столами (Стол 3 ← Стол 1 → Стол 2)
+    this.dom.benchSwitcher?.addEventListener('click', (e) => {
+      const tab = e.target.closest('[data-bench]');
+      if (tab) {
+        this.switchBench(Number(tab.dataset.bench));
+      }
+    });
+    this.dom.btnBenchPrev?.addEventListener('click', () => this.stepBench(-1));
+    this.dom.btnBenchNext?.addEventListener('click', () => this.stepBench(1));
+    this.dom.btnWalkLeft?.addEventListener('click', () => this.stepBench(-1));
+    this.dom.btnWalkRight?.addEventListener('click', () => this.stepBench(1));
 
     // Ракурсы 3D-камеры
     this.dom.cameraGroup.addEventListener('click', (e) => {
@@ -293,6 +344,8 @@ class ChemLabApp {
 
     // Приборы и лабораторные установки на столе
     this.dom.btnBurner?.addEventListener('click', () => this.toggleBurner());
+    this.dom.btnHotplate?.addEventListener('click', () => this.toggleHotplate());
+    this.dom.btnMuffle?.addEventListener('click', () => this.toggleMuffle());
     this.dom.btnIceBath?.addEventListener('click', () => this.toggleIceBath());
     this.dom.btnStirrer?.addEventListener('click', () => this.toggleStirrer());
     this.dom.btnBurette?.addEventListener('click', () => this.toggleBurette());
@@ -439,11 +492,64 @@ class ChemLabApp {
     this._syncAllUI();
   }
 
+  switchBench(benchId, silent = false) {
+    if (!BENCHES[benchId]) return;
+    if (this.labState.bench === benchId) {
+      // Если камера была в режиме «Все 3 стола» — фокусируемся на выбранном столе
+      if (this.scene3d.presetId === 'hall' || this.scene3d.presetId === 'gas') {
+        this._setCamActiveBtn('all');
+        this.scene3d.setCameraPreset('all');
+      }
+      return;
+    }
+    this._pushUndoSnapshot();
+    const prevBench = this.labState.bench || 1;
+    this.labState.bench = benchId;
+
+    // При переносе с одного стола на другой снимаем газоотводную трубку (Стол 1) и вынимаем сосуд из муфеля (Стол 3)
+    if (prevBench === 1 && benchId !== 1) {
+      this.labState.tubeOn = false;
+    }
+    if (prevBench === 3 && benchId !== 3) {
+      this.labState.muffleLvl = 0;
+    }
+
+    if (this.scene3d.presetId === 'hall' || this.scene3d.presetId === 'gas') {
+      this._setCamActiveBtn('all');
+      this.scene3d.setCameraPreset('all');
+    } else {
+      this.scene3d.camSpherical = { yaw: 0, pitch: 0, zoom: 1 };
+    }
+
+    this.sound.play('transfer');
+    const info = BENCHES[benchId];
+    if (!silent) {
+      this.showToast(`🚶 Переход на ${info.name}: ${info.subtitle}`);
+    }
+    this._log(`Перенос сосуда: ${BENCHES[prevBench]?.short || 'Стол'} → ${info.name} (${info.subtitle})`);
+    this._syncAllUI();
+  }
+
+  stepBench(delta) {
+    const curIdx = BENCH_ORDER.indexOf(this.labState.bench || 1);
+    const nextIdx = Math.max(0, Math.min(BENCH_ORDER.length - 1, curIdx + delta));
+    if (nextIdx === curIdx) return;
+    this.switchBench(BENCH_ORDER[nextIdx]);
+  }
+
+  _setCamActiveBtn(camId) {
+    this.dom.cameraGroup?.querySelectorAll('.seg-btn').forEach((b) => {
+      b.classList.toggle('active', b.dataset.cam === camId);
+    });
+  }
+
   washVessel() {
     this._pushUndoSnapshot();
     const keepVessel = this.labState.vessel;
+    const keepBench = this.labState.bench || 1;
     const keepHeat = this.labState.heatLvl;
     this.labState = createInitialLabState(keepVessel);
+    this.labState.bench = keepBench;
     this.labState.heatLvl = keepHeat;
     this.sound.play('pour');
     this._log('Посуда вымыта дистиллированной водой');
@@ -547,13 +653,87 @@ class ChemLabApp {
 
   toggleBurner() {
     this._pushUndoSnapshot();
+    const moved = this.labState.bench !== 1;
+    if (moved) {
+      this.labState.bench = 1;
+      this.labState.muffleLvl = 0;
+      this.sound.play('transfer');
+    }
     this.labState.heatLvl = (this.labState.heatLvl + 1) % 4;
     if (this.labState.heatLvl > 0) {
       this.labState.iceBathOn = false;
       this.sound.play('ignite');
     }
     const labels = ['погашена', 'слабое пламя', 'среднее пламя', 'сильное пламя'];
-    this._log(`Спиртовка: ${labels[this.labState.heatLvl]}`);
+    if (moved && this.labState.heatLvl > 0) {
+      this.showToast(`🔥 Перенос на Стол 1 · Спиртовка: ${labels[this.labState.heatLvl]}`);
+    }
+    this._log(`Спиртовка (Стол 1): ${labels[this.labState.heatLvl]}`);
+    this._syncAllUI();
+  }
+
+  toggleHotplate() {
+    this._pushUndoSnapshot();
+    const moved = this.labState.bench !== 2;
+    if (moved) {
+      this.labState.bench = 2;
+      this.labState.tubeOn = false;
+      this.labState.muffleLvl = 0;
+      if (this.scene3d.presetId === 'hall' || this.scene3d.presetId === 'gas') {
+        this._setCamActiveBtn('all');
+        this.scene3d.setCameraPreset('all');
+      }
+      this.sound.play('transfer');
+    }
+    this.labState.hotplateLvl = ((this.labState.hotplateLvl || 0) + 1) % 4;
+    if (this.labState.hotplateLvl > 0) {
+      this.labState.iceBathOn = false;
+    }
+    this.sound.play('switch');
+    const hpLabels = [
+      'нагрев конфорки выключен',
+      'бережный подогрев 60 °C',
+      'средний нагрев 125 °C',
+      'интенсивный нагрев 260 °C'
+    ];
+    this.showToast(`🌡️ Магнитная мешалка с подогревом (Стол 2): ${hpLabels[this.labState.hotplateLvl]}`);
+    this._log(`Термомешалка (Стол 2): ${hpLabels[this.labState.hotplateLvl]}`);
+    this._syncAllUI();
+  }
+
+  toggleMuffle() {
+    this._pushUndoSnapshot();
+    const moved = this.labState.bench !== 3;
+    if (moved) {
+      this.labState.bench = 3;
+      this.labState.tubeOn = false;
+      if (this.scene3d.presetId === 'hall' || this.scene3d.presetId === 'gas') {
+        this._setCamActiveBtn('all');
+        this.scene3d.setCameraPreset('all');
+      }
+      this.sound.play('transfer');
+    }
+    this.labState.muffleLvl = ((this.labState.muffleLvl || 0) + 1) % 3;
+    if (this.labState.muffleLvl > 0) {
+      this.labState.iceBathOn = false;
+      this.labState.buretteOn = false;
+      this.labState.electrolysisOn = false;
+      this.labState.stirrerOn = false;
+    }
+    this.sound.play('muffleDoor');
+
+    const vInfo = VESSELS[this.labState.vessel];
+    const mfLabels = [
+      'выключена — сосуд переставлен из камеры на керамическую подставку для остывания',
+      'режим 600 °C (сушка, обезвоживание и умеренное прокаливание)',
+      'режим 950 °C (высокотемпературный обжиг известняка CaCO₃ → CaO + CO₂↑)'
+    ];
+    if (this.labState.muffleLvl > 0 && !vInfo.muffleSafe) {
+      this.showToast(`⚠ Муфельная печь (${this.labState.muffleLvl === 2 ? '950 °C' : '600 °C'}): стеклянная посуда размягчается свыше 560 °C! Выберите фарфоровый «Тигель 40 мл» или «Чашку 80 мл».`);
+    } else {
+      this.showToast(`🧱 Муфельная печь ПМ-1000 (Стол 3): ${mfLabels[this.labState.muffleLvl]}`);
+    }
+    this._log(`Муфельная печь ПМ-1000 (Стол 3): ${mfLabels[this.labState.muffleLvl]}`);
     this._syncAllUI();
   }
 
@@ -644,6 +824,12 @@ class ChemLabApp {
 
   toggleElectrolysis() {
     this._pushUndoSnapshot();
+    if (!this.labState.electrolysisOn && this.labState.bench !== 3) {
+      this.labState.bench = 3;
+      this.labState.tubeOn = false;
+      this.sound.play('transfer');
+    }
+    this.labState.muffleLvl = 0;
     this.labState.electrolysisOn = !this.labState.electrolysisOn;
     if (this.labState.electrolysisOn) {
       this.labState.tubeOn = false;
@@ -721,6 +907,11 @@ class ChemLabApp {
       return;
     }
     this._pushUndoSnapshot();
+    if (this.labState.bench !== 1) {
+      this.labState.bench = 1;
+      this.labState.muffleLvl = 0;
+      this.sound.play('transfer');
+    }
     this.labState.tubeOn = !this.labState.tubeOn;
     if (this.labState.tubeOn) {
       this.labState.buretteOn = false;
@@ -938,8 +1129,11 @@ class ChemLabApp {
     this._pushUndoSnapshot();
     const P = task.prep;
     this.labState = createInitialLabState(P.vessel || 'flask');
+    this.labState.bench = P.bench || 1;
     if (P.tubeOn) this.labState.tubeOn = true;
     if (P.heatLvl) this.labState.heatLvl = P.heatLvl;
+    if (P.hotplateLvl) this.labState.hotplateLvl = P.hotplateLvl;
+    if (P.muffleLvl) this.labState.muffleLvl = P.muffleLvl;
     if (P.iceBathOn) this.labState.iceBathOn = true;
     if (P.stirrerOn) this.labState.stirrerOn = true;
     if (P.buretteOn) this.labState.buretteOn = true;
@@ -998,13 +1192,16 @@ class ChemLabApp {
       });
     }
 
-    // Звуковые петли шипения газа и горения спиртовки
+    // Звуковые петли шипения газа, горения спиртовки и гудения муфеля/плитки
     const fizzLvl = Math.max(
       res.gasRate > 0 ? Math.min(1, 0.25 + res.gasRate / 35) : 0,
       res.boiling ? 0.45 : 0
     );
-    const flameLvl = this.labState.heatLvl > 0 ? 0.25 + this.labState.heatLvl * 0.22 : 0;
-    this.sound.updateLoops({ fizz: fizzLvl, flame: flameLvl });
+    const flameLvl = this.labState.bench === 1 && this.labState.heatLvl > 0 ? 0.25 + this.labState.heatLvl * 0.22 : 0;
+    const furnaceLvl = (this.labState.bench === 3 && (this.labState.muffleLvl || 0) > 0)
+      ? 0.45 + (this.labState.muffleLvl || 0) * 0.22
+      : ((this.labState.bench === 2 && ((this.labState.hotplateLvl || 0) > 0 || this.labState.stirrerOn)) ? 0.28 : 0);
+    this.sound.updateLoops({ fizz: fizzLvl, flame: flameLvl, furnace: furnaceLvl });
 
     this._syncDynamicUI(res.analysis);
   }
@@ -1251,6 +1448,34 @@ class ChemLabApp {
     }
     this.dom.precipitatesList.innerHTML = badges.join('');
 
+    // Переключатель лабораторных столов и боковые стрелки быстрого перехода
+    const curBench = this.labState.bench || 1;
+    const curOrderIdx = BENCH_ORDER.indexOf(curBench);
+    this.dom.benchSwitcher?.querySelectorAll('[data-bench]').forEach((tab) => {
+      tab.classList.toggle('active', Number(tab.dataset.bench) === curBench);
+    });
+    if (this.dom.btnBenchPrev) this.dom.btnBenchPrev.disabled = curOrderIdx <= 0;
+    if (this.dom.btnBenchNext) this.dom.btnBenchNext.disabled = curOrderIdx >= BENCH_ORDER.length - 1;
+
+    if (this.dom.btnWalkLeft && this.dom.walkLeftLabel) {
+      if (curOrderIdx > 0) {
+        const leftBench = BENCHES[BENCH_ORDER[curOrderIdx - 1]];
+        this.dom.btnWalkLeft.style.display = 'inline-flex';
+        this.dom.walkLeftLabel.textContent = leftBench.short;
+      } else {
+        this.dom.btnWalkLeft.style.display = 'none';
+      }
+    }
+    if (this.dom.btnWalkRight && this.dom.walkRightLabel) {
+      if (curOrderIdx < BENCH_ORDER.length - 1) {
+        const rightBench = BENCHES[BENCH_ORDER[curOrderIdx + 1]];
+        this.dom.btnWalkRight.style.display = 'inline-flex';
+        this.dom.walkRightLabel.textContent = rightBench.short;
+      } else {
+        this.dom.btnWalkRight.style.display = 'none';
+      }
+    }
+
     // Показания приборов
     const tempStr = this.labState.temp.toFixed(1).replace('.', ',') + ' °C';
     const volStr = `${analysis.volume} / ${vInfo.cap} мл`;
@@ -1296,11 +1521,15 @@ class ChemLabApp {
       this.dom.phMarker.style.opacity = '0.3';
     }
 
-    this.dom.envStateTag.textContent = this.labState.electrolysisOn && analysis.currentAmp > 0
-      ? 'Электролиз'
-      : (this.lastSimInfo.boiling
-        ? 'Кипение'
-        : (this.labState.iceBathOn ? 'Охлаждение' : (this.lastSimInfo.gasRate > 0.2 ? 'Идёт газ' : 'Норма')));
+    this.dom.envStateTag.textContent = (curBench === 3 && (this.labState.muffleLvl || 0) > 0)
+      ? (this.labState.muffleLvl === 2 ? 'Муфель 950 °C' : 'Муфель 600 °C')
+      : ((curBench === 2 && (this.labState.hotplateLvl || 0) > 0)
+        ? `Плитка ${['', '60 °C', '125 °C', '260 °C'][this.labState.hotplateLvl]}`
+        : (this.labState.electrolysisOn && analysis.currentAmp > 0
+          ? 'Электролиз'
+          : (this.lastSimInfo.boiling
+            ? 'Кипение'
+            : (this.labState.iceBathOn ? 'Охлаждение' : (this.lastSimInfo.gasRate > 0.2 ? 'Идёт газ' : BENCHES[curBench]?.short || 'Норма')))));
 
     // Предупреждения ТБ
     this.dom.safetyAlerts.innerHTML = analysis.warnings
@@ -1310,7 +1539,20 @@ class ChemLabApp {
     // Нижняя док-панель приборов
     const burnerLabels = ['Спиртовка', 'Слабое', 'Среднее', 'Сильное'];
     this.dom.burnerBtnText.textContent = burnerLabels[this.labState.heatLvl];
-    this.dom.btnBurner.classList.toggle('flame-on', this.labState.heatLvl > 0);
+    this.dom.btnBurner.classList.toggle('flame-on', curBench === 1 && this.labState.heatLvl > 0);
+
+    const hpLabels = ['Плитка', '60 °C', '125 °C', '260 °C'];
+    if (this.dom.hotplateBtnText) {
+      this.dom.hotplateBtnText.textContent = hpLabels[this.labState.hotplateLvl || 0];
+    }
+    this.dom.btnHotplate?.classList.toggle('hotplate-on', curBench === 2 && (this.labState.hotplateLvl || 0) > 0);
+
+    const mfLabels = ['Муфель', '600 °C', '950 °C'];
+    if (this.dom.muffleBtnText) {
+      this.dom.muffleBtnText.textContent = mfLabels[this.labState.muffleLvl || 0];
+    }
+    this.dom.btnMuffle?.classList.toggle('muffle-on', curBench === 3 && (this.labState.muffleLvl || 0) > 0);
+
     this.dom.btnIceBath?.classList.toggle('ice-on', !!this.labState.iceBathOn);
     this.dom.btnStirrer?.classList.toggle('active', !!this.labState.stirrerOn);
     this.dom.btnBurette?.classList.toggle('active', !!this.labState.buretteOn);

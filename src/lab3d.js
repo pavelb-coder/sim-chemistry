@@ -1,12 +1,12 @@
 import * as THREE from '../vendor/three.module.min.js';
-import { REAGENTS } from './reagents.js?v=2.1.1';
-import { VESSELS } from './chemistry.js?v=2.1.1';
+import { REAGENTS } from './reagents.js?v=2.2.1';
+import { VESSELS, BENCHES } from './chemistry.js?v=2.2.1';
 
 const CAMERA_PRESETS = {
-  all:    { pos: [0.35, 2.48, 7.15], target: [0.32, 1.42, 0], fov: 35 },
-  vessel: { pos: [-0.35, 2.08, 4.15], target: [-0.35, 1.62, 0], fov: 30 },
-  equip:  { pos: [-0.82, 2.22, 4.85], target: [-0.68, 1.50, 0], fov: 32 },
-  gas:    { pos: [1.15, 2.0, 4.65], target: [1.05, 1.45, 0], fov: 32 },
+  all:    { pos: [0.10, 2.42, 6.85], target: [0.05, 1.25, 0], fov: 35 },
+  vessel: { pos: [-0.35, 2.08, 4.05], target: [-0.35, 1.55, 0], fov: 29 },
+  hall:   { pos: [0.0, 3.65, 16.4], target: [0.0, 1.05, 0], fov: 41 },
+  gas:    { pos: [1.05, 2.0, 4.65], target: [0.95, 1.38, 0], fov: 32 },
   lamp:   { pos: [-0.35, 1.25, 3.65], target: [-0.35, 0.92, 0], fov: 30 }
 };
 
@@ -69,9 +69,22 @@ export class Lab3DScene {
     this.pourAnim = { active: false, t: 0, dur: 1.0, color: '#cfe8f7', solid: false, formula: '' };
     this.dripAnim = { active: false, t: 0, dur: 0.55, color: '#dff2fc' };
     this.filterAnim = { active: false, t: 0, dur: 2.1, cakeColor: '#f8fafc' };
+    this.transferAnim = {
+      active: false,
+      t: 0,
+      dur: 0.78,
+      from: new THREE.Vector3(-0.35, 1.18, 0),
+      to: new THREE.Vector3(-0.35, 1.18, 0)
+    };
+    this.curVesselPos = new THREE.Vector3(-0.35, 1.18, 0);
+    this.muffleDoorAngle = 0;
+    this.muffleGlow = 0;
+    this.hotplateGlow = 0;
     this.titrantColor = '#dff2fc';
     this.lastMassKey = '';
     this.lastPsuKey = '';
+    this.lastHotplateKey = '';
+    this.lastMuffleKey = '';
     this.iceCubes = [];
     this.toolAnim = { kind: '', t: 0, dur: 0, extra: {}, burstDone: false };
     this.flameTint = { color: '', until: 0 };
@@ -190,13 +203,13 @@ export class Lab3DScene {
     this.scene.add(this.hemiLight);
 
     const dir = new THREE.DirectionalLight('#fffaf0', 1.45);
-    dir.position.set(-2.8, 5.6, 4.8);
+    dir.position.set(-2.8, 6.2, 5.4);
     dir.castShadow = true;
-    dir.shadow.mapSize.set(1024, 1024);
+    dir.shadow.mapSize.set(2048, 1024);
     dir.shadow.camera.near = 1;
-    dir.shadow.camera.far = 16;
-    dir.shadow.camera.left = -4.5;
-    dir.shadow.camera.right = 4.5;
+    dir.shadow.camera.far = 20;
+    dir.shadow.camera.left = -8.5;
+    dir.shadow.camera.right = 8.5;
     dir.shadow.camera.top = 4.5;
     dir.shadow.camera.bottom = -2.5;
     dir.shadow.bias = -0.0005;
@@ -207,46 +220,104 @@ export class Lab3DScene {
     this.flameLight.position.set(this.vesselX, 0.95, 0.2);
     this.scene.add(this.flameLight);
 
+    this.muffleLight = new THREE.PointLight('#ff5d00', 0, 4.2, 1.4);
+    this.muffleLight.position.set(-4.85, 0.85, -0.15);
+    this.scene.add(this.muffleLight);
+
     this.flashLight = new THREE.PointLight('#ffffff', 0, 7.0, 1.3);
     this.flashLight.position.set(this.vesselX, 1.85, 0.4);
     this.scene.add(this.flashLight);
   }
 
   _buildRoomAndBench() {
+    this.interactables = [];
+
     this.wallMat = new THREE.MeshStandardMaterial({ roughness: 0.48, metalness: 0.02 });
-    const wall = new THREE.Mesh(new THREE.PlaneGeometry(18, 9), this.wallMat);
-    wall.position.set(0, 3.2, -1.55);
+    const wall = new THREE.Mesh(new THREE.PlaneGeometry(32, 9.5), this.wallMat);
+    wall.position.set(0, 3.2, -1.62);
     wall.receiveShadow = true;
     this.scene.add(wall);
 
-    // Столешница лабораторного стола
+    // Пол зала между тремя лабораторными столами
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(32, 10),
+      new THREE.MeshStandardMaterial({ color: '#cbd5e1', roughness: 0.78 })
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(0, -2.54, 1.2);
+    floor.receiveShadow = true;
+    this.scene.add(floor);
+
+    // Столешница лабораторных столов (обновляется при смене темы)
     this.benchMat = new THREE.MeshStandardMaterial({
       color: '#f1f5f9',
       roughness: 0.32,
       metalness: 0.04
     });
-    const benchTop = new THREE.Mesh(new THREE.BoxGeometry(14, 0.14, 3.6), this.benchMat);
-    benchTop.position.set(0, -0.07, 0.15);
-    benchTop.receiveShadow = true;
-    this.scene.add(benchTop);
 
-    // Передняя кромка стола (химстойкий кант)
-    const trim = new THREE.Mesh(
-      new THREE.BoxGeometry(14, 0.05, 0.06),
-      new THREE.MeshStandardMaterial({ color: '#64748b', roughness: 0.45, metalness: 0.3 })
-    );
-    trim.position.set(0, -0.03, 1.96);
-    this.scene.add(trim);
+    const trimColors = { 1: '#2563eb', 2: '#059669', 3: '#ea580c' };
+    const benchSpecs = [
+      { id: 3, x: -5.0, title: 'СТОЛ 3 · МУФЕЛЬНАЯ ПЕЧЬ И ТОК', tip: 'Стол 3 (Муфельная печь до 950 °C и электролиз): нажмите, чтобы перенести сосуд сюда' },
+      { id: 1, x: 0.0,  title: 'СТОЛ 1 · ГОРЕЛКА И ГАЗЫ',       tip: 'Стол 1 (Спиртовка, синтез и сбор газов): нажмите, чтобы перенести сосуд сюда' },
+      { id: 2, x: 5.0,  title: 'СТОЛ 2 · МЕШАЛКА-ПЛИТКА',       tip: 'Стол 2 (Магнитная мешалка с подогревом, бюретка, фильтр и весы): нажмите, чтобы перенести сосуд сюда' }
+    ];
 
-    // Тумба под столом
-    const cabinet = new THREE.Mesh(
-      new THREE.BoxGeometry(14, 2.4, 3.3),
-      new THREE.MeshStandardMaterial({ color: '#e2e8f0', roughness: 0.65 })
-    );
-    cabinet.position.set(0, -1.34, 0.02);
-    this.scene.add(cabinet);
+    for (const bs of benchSpecs) {
+      const grp = new THREE.Group();
+      grp.position.set(bs.x, 0, 0);
 
-    this.interactables = [];
+      const benchTop = new THREE.Mesh(new THREE.BoxGeometry(4.45, 0.14, 3.55), this.benchMat);
+      benchTop.position.set(0, -0.07, 0.15);
+      benchTop.receiveShadow = true;
+      grp.add(benchTop);
+
+      // Передний цветной кант-маркер стола + табличка номера стола
+      const trim = new THREE.Mesh(
+        new THREE.BoxGeometry(4.45, 0.055, 0.065),
+        new THREE.MeshStandardMaterial({ color: trimColors[bs.id], roughness: 0.4, metalness: 0.25 })
+      );
+      trim.position.set(0, -0.03, 1.94);
+      grp.add(trim);
+
+      const badgeCanvas = document.createElement('canvas');
+      badgeCanvas.width = 512;
+      badgeCanvas.height = 64;
+      const bCtx = badgeCanvas.getContext('2d');
+      bCtx.fillStyle = '#0f172a';
+      bCtx.fillRect(0, 0, 512, 64);
+      bCtx.fillStyle = '#f8fafc';
+      bCtx.font = '800 24px system-ui, sans-serif';
+      bCtx.textAlign = 'center';
+      bCtx.textBaseline = 'middle';
+      bCtx.fillText(bs.title, 256, 33);
+      const badgeTex = new THREE.CanvasTexture(badgeCanvas);
+      badgeTex.colorSpace = THREE.SRGBColorSpace;
+      const badgePlate = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.55, 0.19),
+        new THREE.MeshBasicMaterial({ map: badgeTex })
+      );
+      badgePlate.position.set(0, 2.55, -1.60);
+      grp.add(badgePlate);
+
+      const cabinet = new THREE.Mesh(
+        new THREE.BoxGeometry(4.25, 2.4, 3.25),
+        new THREE.MeshStandardMaterial({ color: '#e2e8f0', roughness: 0.65 })
+      );
+      cabinet.position.set(0, -1.34, 0.02);
+      grp.add(cabinet);
+
+      // Хитбокс столешницы для переноса сосуда кликом по соседнему столу
+      const benchHit = new THREE.Mesh(
+        new THREE.BoxGeometry(4.4, 0.18, 3.5),
+        new THREE.MeshBasicMaterial({ visible: false })
+      );
+      benchHit.position.set(0, -0.06, 0.15);
+      benchHit.userData = { action: `bench:${bs.id}`, tip: bs.tip };
+      this.interactables.push(benchHit);
+      grp.add(benchHit);
+
+      this.scene.add(grp);
+    }
   }
 
   _buildStandAndBurner() {
@@ -668,6 +739,17 @@ export class Lab3DScene {
         [0.62 + offset, 0.56]
       ];
     }
+    if (kind === 'crucible') {
+      // Высокий конусный фарфоровый тигель для прокаливания в муфельной печи (до 1000 °C)
+      return [
+        [0.001, 0.0 + offset],
+        [0.16 + offset, 0.01 + offset],
+        [0.21 + offset, 0.16],
+        [0.26 + offset, 0.42],
+        [0.30 + offset, 0.64],
+        [0.325 + offset, 0.70]
+      ];
+    }
     // beaker
     return [
       [0.001, 0.0 + offset],
@@ -698,6 +780,10 @@ export class Lab3DScene {
       const t = Math.max(0, Math.min(1, yLocal / 0.52));
       return 0.18 + t * 0.37;
     }
+    if (kind === 'crucible') {
+      const t = Math.max(0, Math.min(1, yLocal / 0.66));
+      return 0.15 + t * 0.135;
+    }
     if (kind === 'beaker') {
       return 0.495;
     }
@@ -712,6 +798,7 @@ export class Lab3DScene {
     if (kind === 'tube') return 1.08;
     if (kind === 'round') return 0.86;
     if (kind === 'evap') return 0.43;
+    if (kind === 'crucible') return 0.55;
     if (kind === 'beaker') return 0.98;
     return 0.82; // flask 100 ml
   }
@@ -720,6 +807,7 @@ export class Lab3DScene {
     if (kind === 'tube') return 1.38;
     if (kind === 'round') return 1.39;
     if (kind === 'evap') return 0.56;
+    if (kind === 'crucible') return 0.70;
     if (kind === 'beaker') return 1.21;
     return 1.28;
   }
@@ -739,6 +827,7 @@ export class Lab3DScene {
 
     const marksMap = {
       tube: [5, 10, 15, 20, 25],
+      crucible: [10, 20, 30, 40],
       evap: [20, 40, 60, 80],
       flask: [20, 40, 60, 80, 100],
       round: [30, 60, 90, 120, 150],
@@ -827,25 +916,46 @@ export class Lab3DScene {
       clippingPlanes: [this.gasClipPlane]
     });
 
+    const porcelainOuterMat = new THREE.MeshPhysicalMaterial({
+      color: '#f8fafc',
+      roughness: 0.16,
+      metalness: 0.02,
+      clearcoat: 0.85,
+      clearcoatRoughness: 0.1,
+      side: THREE.FrontSide
+    });
+    const porcelainInnerMat = new THREE.MeshStandardMaterial({
+      color: '#f1f5f9',
+      roughness: 0.28,
+      metalness: 0.02,
+      side: THREE.BackSide
+    });
+
     this.vesselMeshes = {};
-    for (const kind of ['flask', 'tube', 'beaker']) {
+    for (const kind of ['flask', 'round', 'tube', 'beaker', 'evap', 'crucible']) {
       const grp = new THREE.Group();
+      const isPorcelain = kind === 'evap' || kind === 'crucible';
       const outerPts = this._vesselProfile(kind, 0.014).map(([r, y]) => new THREE.Vector2(r, y));
       const innerPts = this._vesselProfile(kind, 0).slice(0, -1).map(([r, y]) => new THREE.Vector2(Math.max(0.001, r * 0.96), y + 0.01));
 
       const glassBack = new THREE.Mesh(
         new THREE.LatheGeometry(outerPts, 44),
-        new THREE.MeshPhysicalMaterial({
-          color: '#dceefb',
-          transparent: true,
-          opacity: 0.08,
-          roughness: 0.08,
-          side: THREE.BackSide,
-          depthWrite: false
-        })
+        isPorcelain
+          ? porcelainInnerMat
+          : new THREE.MeshPhysicalMaterial({
+              color: '#dceefb',
+              transparent: true,
+              opacity: 0.08,
+              roughness: 0.08,
+              side: THREE.BackSide,
+              depthWrite: false
+            })
       );
-      const glassFront = new THREE.Mesh(new THREE.LatheGeometry(outerPts, 44), this._createGlassMaterial(0.17));
-      glassFront.renderOrder = 6;
+      const glassFront = new THREE.Mesh(
+        new THREE.LatheGeometry(outerPts, 44),
+        isPorcelain ? porcelainOuterMat : this._createGlassMaterial(0.17)
+      );
+      glassFront.renderOrder = isPorcelain ? 2 : 6;
 
       const liqMesh = new THREE.Mesh(new THREE.LatheGeometry(innerPts, 40), this.liqMat);
       liqMesh.renderOrder = 3;
@@ -863,16 +973,16 @@ export class Lab3DScene {
 
       // Кольцо возгонки у горлышка
       const mouthY = this._mouthHeight(kind);
-      const neckR = this._innerRadiusAt(kind, mouthY - 0.22);
+      const neckR = this._innerRadiusAt(kind, Math.max(0.08, mouthY - 0.22));
       const sublRing = new THREE.Mesh(
-        new THREE.CylinderGeometry(neckR * 0.99, neckR * 0.99, 0.26, 32, 1, true),
+        new THREE.CylinderGeometry(neckR * 0.99, neckR * 0.99, 0.22, 32, 1, true),
         this.sublMat
       );
-      sublRing.position.y = mouthY - 0.26;
+      sublRing.position.y = Math.max(0.18, mouthY - 0.22);
       sublRing.renderOrder = 5;
 
-      // Градуировка на передней стенке
-      const scaleR = kind === 'tube' ? 0.192 : (kind === 'beaker' ? 0.528 : 0.36);
+      // Градуировка на передней стенке (только на прозрачной стеклянной посуде)
+      const scaleR = kind === 'tube' ? 0.192 : (kind === 'beaker' ? 0.528 : (kind === 'round' ? 0.475 : 0.36));
       const scaleGeo = new THREE.CylinderGeometry(scaleR, kind === 'flask' ? 0.48 : scaleR, this._liquidMaxHeight(kind) * 1.05, 24, 1, true, -0.35, 0.7);
       const scaleMesh = new THREE.Mesh(
         scaleGeo,
@@ -882,6 +992,7 @@ export class Lab3DScene {
           depthWrite: false
         })
       );
+      scaleMesh.visible = !isPorcelain;
       scaleMesh.position.y = this._liquidMaxHeight(kind) * 0.52 + 0.04;
       scaleMesh.renderOrder = 7;
 
@@ -1125,21 +1236,23 @@ export class Lab3DScene {
     }
     this.scene.add(this.iceBathGroup);
 
-    // 3. Титровальная бюретка 25 мл на высоком штативе над сосудом
+    // 3. Титровальная бюретка 25 мл на штативе (следует за сосудом при включении)
     this.buretteGroup = new THREE.Group();
     this.buretteGroup.visible = false;
 
+    this.buretteStand = new THREE.Group();
     const bStandBase = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.045, 0.36), darkMetal);
-    bStandBase.position.set(-1.02, 0.022, -0.16);
-    const bStandRod = new THREE.Mesh(new THREE.CylinderGeometry(0.020, 0.020, 3.65, 14), chrome);
-    bStandRod.position.set(-1.02, 1.84, -0.16);
-    this.buretteGroup.add(bStandBase, bStandRod);
+    bStandBase.position.set(-0.68, 0.022, -0.18);
+    const bStandRod = new THREE.Mesh(new THREE.CylinderGeometry(0.020, 0.020, 3.25, 14), chrome);
+    bStandRod.position.set(-0.68, 1.64, -0.18);
+    this.buretteStand.add(bStandBase, bStandRod);
+    this.buretteGroup.add(this.buretteStand);
 
     // Подвижная каретка бюретки (центрируется над горлышком активного сосуда)
     this.buretteColumn = new THREE.Group();
-    const bClampArm = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.72, 10), darkMetal);
+    const bClampArm = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.70, 10), darkMetal);
     bClampArm.rotation.z = Math.PI / 2;
-    bClampArm.position.set(-0.34, 0.52, -0.08);
+    bClampArm.position.set(-0.34, 0.52, -0.09);
 
     const bGlassTube = new THREE.Mesh(
       new THREE.CylinderGeometry(0.046, 0.046, 1.05, 22, 1, true),
@@ -1187,85 +1300,110 @@ export class Lab3DScene {
     this.scene.add(this.buretteDropMesh);
     this.scene.add(this.buretteGroup);
 
-    // 4. Электролизная установка: источник постоянного тока 12 В + графитовые электроды в сосуде
-    this.electrolysisGroup = new THREE.Group();
-    this.electrolysisGroup.visible = false;
+    // 4. СТОЛ 2 (X = +5.0): Магнитная мешалка с подогревом (керамическая термоплитка + 2 ручки + ЖК-экран)
+    const hpX = 4.90;
+    const hpZ = 0.05;
+    this.hotplateGroup = new THREE.Group();
+    this.hotplateGroup.position.set(hpX, 0, hpZ);
 
-    const psuX = -1.36;
-    const psuZ = -0.14;
-    const psuBox = new THREE.Mesh(
-      new THREE.BoxGeometry(0.56, 0.38, 0.42),
-      new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.45, metalness: 0.35 })
+    const hpChassis = new THREE.Mesh(
+      new THREE.BoxGeometry(0.96, 0.15, 0.92),
+      new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.30, metalness: 0.08 })
     );
-    psuBox.position.set(psuX, 0.19, psuZ);
-    psuBox.castShadow = true;
+    hpChassis.position.set(0, 0.085, 0);
+    hpChassis.castShadow = true;
+    hpChassis.receiveShadow = true;
 
-    this.psuCanvas = document.createElement('canvas');
-    this.psuCanvas.width = 256;
-    this.psuCanvas.height = 128;
-    this.psuCtx = this.psuCanvas.getContext('2d');
-    this._drawLcdCanvas(this.psuCtx, '#062e22', '#34d399', 'DC 12.0 В', '0.00 А', 'ЭЛЕКТРОЛИЗ');
-    this.psuTex = new THREE.CanvasTexture(this.psuCanvas);
-    this.psuTex.colorSpace = THREE.SRGBColorSpace;
-
-    const psuScreen = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.42, 0.21),
-      new THREE.MeshBasicMaterial({ map: this.psuTex })
+    // Скошенная передняя панель управления термомешалки
+    const hpApron = new THREE.Mesh(
+      new THREE.BoxGeometry(0.94, 0.13, 0.24),
+      new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.42, metalness: 0.25 })
     );
-    psuScreen.position.set(psuX, 0.23, psuZ + 0.212);
+    hpApron.rotation.x = -Math.PI / 6;
+    hpApron.position.set(0, 0.075, 0.48);
+    hpApron.castShadow = true;
 
-    const termBlack = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.022, 0.022, 0.05, 14),
-      new THREE.MeshStandardMaterial({ color: '#0f172a', roughness: 0.4 })
+    // Белая стеклокерамическая нагревательная платформа (верх на y = 0.205)
+    const hpCeramic = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.40, 0.42, 0.05, 40),
+      new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.18, metalness: 0.04 })
     );
-    termBlack.rotation.x = Math.PI / 2;
-    termBlack.position.set(psuX - 0.13, 0.08, psuZ + 0.22);
+    hpCeramic.position.set(0, 0.18, -0.04);
+    hpCeramic.receiveShadow = true;
 
-    const termRed = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.022, 0.022, 0.05, 14),
-      new THREE.MeshStandardMaterial({ color: '#dc2626', roughness: 0.4 })
+    // Светящееся инфракрасное кольцо накала керамической конфорки
+    this.hotplateRingMat = new THREE.MeshStandardMaterial({
+      color: '#cbd5e1',
+      emissive: '#ff4d00',
+      emissiveIntensity: 0,
+      roughness: 0.35
+    });
+    const hpGlowRing = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.022, 12, 40), this.hotplateRingMat);
+    hpGlowRing.rotation.x = Math.PI / 2;
+    hpGlowRing.position.set(0, 0.206, -0.04);
+
+    // Две поворотные ручки: слева — обороты якоря (RPM), справа — температура подогрева (°C)
+    const knobGeo = new THREE.CylinderGeometry(0.052, 0.058, 0.048, 22);
+    this.hotplateRpmKnob = new THREE.Group();
+    const kRpmBody = new THREE.Mesh(knobGeo, new THREE.MeshStandardMaterial({ color: '#0ea5e9', roughness: 0.32, metalness: 0.2 }));
+    const kRpmTick = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.052, 0.035), new THREE.MeshBasicMaterial({ color: '#ffffff' }));
+    kRpmTick.position.set(0, 0.005, -0.022);
+    this.hotplateRpmKnob.add(kRpmBody, kRpmTick);
+    this.hotplateRpmKnob.rotation.x = Math.PI / 3;
+    this.hotplateRpmKnob.position.set(-0.31, 0.105, 0.54);
+
+    this.hotplateTempKnob = new THREE.Group();
+    const kTmpBody = new THREE.Mesh(knobGeo, new THREE.MeshStandardMaterial({ color: '#f97316', roughness: 0.32, metalness: 0.2 }));
+    const kTmpTick = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.052, 0.035), new THREE.MeshBasicMaterial({ color: '#ffffff' }));
+    kTmpTick.position.set(0, 0.005, -0.022);
+    this.hotplateTempKnob.add(kTmpBody, kTmpTick);
+    this.hotplateTempKnob.rotation.x = Math.PI / 3;
+    this.hotplateTempKnob.position.set(0.31, 0.105, 0.54);
+
+    // Цифровой дисплей магнитной мешалки с подогревом
+    this.hotplateCanvas = document.createElement('canvas');
+    this.hotplateCanvas.width = 256;
+    this.hotplateCanvas.height = 128;
+    this.hotplateCtx = this.hotplateCanvas.getContext('2d');
+    this._drawLcdCanvas(this.hotplateCtx, '#0f172a', '#38bdf8', 'ТЕРМОМЕШАЛКА', 'ВЫКЛ', '0 об/мин · 22 °C');
+    this.hotplateTex = new THREE.CanvasTexture(this.hotplateCanvas);
+    this.hotplateTex.colorSpace = THREE.SRGBColorSpace;
+
+    const hpScreen = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.42, 0.115),
+      new THREE.MeshBasicMaterial({ map: this.hotplateTex })
     );
-    termRed.rotation.x = Math.PI / 2;
-    termRed.position.set(psuX + 0.13, 0.08, psuZ + 0.22);
+    hpScreen.rotation.x = -Math.PI / 6;
+    hpScreen.position.set(0, 0.105, 0.545);
 
-    const psuHit = new THREE.Mesh(
-      new THREE.BoxGeometry(0.62, 0.45, 0.48),
-      new THREE.MeshBasicMaterial({ visible: false })
+    // Задняя стойка-держатель пробирок и круглодонных колб на самой термомешалке
+    const hpRod = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 1.55, 12), chrome);
+    hpRod.position.set(-0.36, 0.82, -0.34);
+    this.hotplateClamp = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.035, 0.05), darkMetal);
+    this.hotplateClamp.position.set(-0.18, 0.92, -0.18);
+    this.hotplateClamp.rotation.y = 0.42;
+
+    // Хитбоксы левой ручки (мешалка) и правой ручки / платформы (подогрев)
+    const hpStirHit = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.25, 0.34), new THREE.MeshBasicMaterial({ visible: false }));
+    hpStirHit.position.set(-0.30, 0.12, 0.48);
+    hpStirHit.userData = { action: 'stirrer', tip: 'Магнитная мешалка: нажмите, чтобы вкл/выкл вращение якоря (600 об/мин)' };
+    this.interactables.push(hpStirHit);
+
+    const hpHeatHit = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.26, 0.72), new THREE.MeshBasicMaterial({ visible: false }));
+    hpHeatHit.position.set(0.20, 0.13, 0.22);
+    hpHeatHit.userData = { action: 'hotplate', tip: 'Подогрев платформы мешалки: нажмите для выбора режима (Выкл → 60 °C → 125 °C → 260 °C)' };
+    this.interactables.push(hpHeatHit);
+
+    this.hotplateGroup.add(
+      hpChassis, hpApron, hpCeramic, hpGlowRing,
+      this.hotplateRpmKnob, this.hotplateTempKnob, hpScreen,
+      hpRod, this.hotplateClamp, hpStirHit, hpHeatHit
     );
-    psuHit.position.set(psuX, 0.22, psuZ);
-    psuHit.userData = { action: 'electrolysis', tip: 'Источник постоянного тока 12 В (нажмите для вкл/выкл электролиза)' };
-    this.interactables.push(psuHit);
+    this.scene.add(this.hotplateGroup);
 
-    // Держатель и два погружных графитовых электрода (катод − слева, анод + справа)
-    this.electrodeRig = new THREE.Group();
-    const elBridge = new THREE.Mesh(
-      new THREE.BoxGeometry(0.28, 0.045, 0.09),
-      new THREE.MeshStandardMaterial({ color: '#334155', roughness: 0.6 })
-    );
-    this.cathodeMat = new THREE.MeshStandardMaterial({ color: '#27272a', roughness: 0.55, metalness: 0.35 });
-    this.anodeMat = new THREE.MeshStandardMaterial({ color: '#27272a', roughness: 0.65, metalness: 0.25 });
-
-    this.cathodeMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.019, 0.019, 0.85, 16), this.cathodeMat);
-    this.cathodeMesh.position.set(-0.075, -0.42, 0);
-    this.anodeMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.019, 0.019, 0.85, 16), this.anodeMat);
-    this.anodeMesh.position.set(0.075, -0.42, 0);
-
-    const pinBlack = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.06, 12), new THREE.MeshStandardMaterial({ color: '#0f172a' }));
-    pinBlack.position.set(-0.075, 0.04, 0);
-    const pinRed = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.06, 12), new THREE.MeshStandardMaterial({ color: '#dc2626' }));
-    pinRed.position.set(0.075, 0.04, 0);
-
-    this.electrodeRig.add(elBridge, this.cathodeMesh, this.anodeMesh, pinBlack, pinRed);
-
-    this.wireCathodeMesh = null;
-    this.wireAnodeMesh = null;
-    this.electrolysisGroup.add(psuBox, psuScreen, termBlack, termRed, psuHit, this.electrodeRig);
-    this.scene.add(this.electrolysisGroup);
-    this._rebuildElectrodeWires('flask');
-
-    // 5. Стойка с фильтровальной воронкой на столе + активная воронка над сосудом при фильтровании
+    // 5. СТОЛ 2: Стойка с фильтровальной воронкой и электронные весы (0,01 г)
     this.funnelStandGroup = new THREE.Group();
-    this.funnelStandGroup.position.set(0.66, 0, -0.36);
+    this.funnelStandGroup.position.set(3.82, 0, -0.18);
 
     const fBase = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.24, 0.04, 24), darkMetal);
     fBase.position.y = 0.02;
@@ -1321,10 +1459,10 @@ export class Lab3DScene {
     this.filterActiveGroup.add(actFunnelGlass, actPaper, this.filterFiltrateStream);
     this.scene.add(this.filterActiveGroup);
 
-    // 6. Лабораторные электронные весы (0,01 г) справа на столе
+    // Электронные аналитические весы (0,01 г) на Столе 2
     this.balanceGroup = new THREE.Group();
-    const balX = 1.62;
-    const balZ = 0.48;
+    const balX = 6.08;
+    const balZ = 0.32;
     const balBody = new THREE.Mesh(
       new THREE.BoxGeometry(0.62, 0.14, 0.56),
       new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.32, metalness: 0.06 })
@@ -1359,40 +1497,275 @@ export class Lab3DScene {
       new THREE.MeshBasicMaterial({ visible: false })
     );
     balHit.position.set(balX, 0.16, balZ);
-    balHit.userData = { action: 'weigh', tip: 'Электронные весы (0,01 г): нажмите, чтобы записать массу смеси в журнал' };
+    balHit.userData = { action: 'weigh', tip: 'Электронные весы (0,01 г): нажмите, чтобы зафиксировать массу смеси' };
     this.interactables.push(balHit);
 
     this.balanceGroup.add(balBody, balNeck, balPan, balScreen, balHit);
     this.scene.add(this.balanceGroup);
+
+    // 6. СТОЛ 3 (X = -5.0): Муфельная печь ПМ-1000 (до 950 °C) + керамический подиум + Электролизёр DC 12 В
+    const mfX = -4.75;
+    const mfZ = -0.42;
+    this.muffleGroup = new THREE.Group();
+    this.muffleGroup.position.set(mfX, 0, mfZ);
+
+    const steelMat = new THREE.MeshStandardMaterial({ color: '#334155', roughness: 0.44, metalness: 0.45 });
+    const lightSteelMat = new THREE.MeshStandardMaterial({ color: '#e2e8f0', roughness: 0.38, metalness: 0.22 });
+
+    // Полый корпус муфельной печи из 5 теплоизолированных стенок (открыт спереди в камеру накала!)
+    const mfBot = new THREE.Mesh(new THREE.BoxGeometry(1.52, 0.36, 1.12), steelMat);
+    mfBot.position.set(0, 0.18, 0);
+    mfBot.castShadow = true;
+
+    const mfTop = new THREE.Mesh(new THREE.BoxGeometry(1.52, 0.28, 1.12), steelMat);
+    mfTop.position.set(0, 1.32, 0);
+    mfTop.castShadow = true;
+
+    const mfBack = new THREE.Mesh(new THREE.BoxGeometry(1.52, 0.82, 0.22), steelMat);
+    mfBack.position.set(0, 0.77, -0.45);
+
+    const mfLeftWall = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.82, 0.92), steelMat);
+    mfLeftWall.position.set(-0.64, 0.77, 0.08);
+    mfLeftWall.castShadow = true;
+
+    // Правый блок автоматики и ПИД-терморегулятора
+    const mfRightCtrl = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.82, 0.96), lightSteelMat);
+    mfRightCtrl.position.set(0.54, 0.77, 0.08);
+    mfRightCtrl.castShadow = true;
+
+    // Вытяжной патрубок сверху муфельной печи
+    const mfChimney = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.075, 0.20, 18), darkMetal);
+    mfChimney.position.set(-0.10, 1.54, -0.15);
+
+    // Внутренняя шамотная камера накала (X центр = -0.10 локально, т.е. -4.85 в мире; под на y = 0.38)
+    this.muffleChamberMat = new THREE.MeshStandardMaterial({
+      color: '#d6d3d1',
+      emissive: '#ff4500',
+      emissiveIntensity: 0,
+      roughness: 0.88,
+      side: THREE.BackSide
+    });
+    const mfChamber = new THREE.Mesh(new THREE.BoxGeometry(0.84, 0.76, 0.82), this.muffleChamberMat);
+    mfChamber.position.set(-0.10, 0.77, 0.06);
+
+    // Керамический под (дно камеры) и спирали фехралевых нагревателей по бокам
+    this.muffleCoilMat = new THREE.MeshStandardMaterial({
+      color: '#57534e',
+      emissive: '#ff6a00',
+      emissiveIntensity: 0,
+      roughness: 0.45,
+      metalness: 0.5
+    });
+    const mfHearth = new THREE.Mesh(
+      new THREE.BoxGeometry(0.80, 0.04, 0.78),
+      new THREE.MeshStandardMaterial({ color: '#e7e5e4', roughness: 0.85 })
+    );
+    mfHearth.position.set(-0.10, 0.40, 0.06);
+    this.muffleGroup.add(mfBot, mfTop, mfBack, mfLeftWall, mfRightCtrl, mfChimney, mfChamber, mfHearth);
+
+    for (let row = 0; row < 3; row++) {
+      for (const side of [-1, 1]) {
+        const coil = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.70, 10), this.muffleCoilMat);
+        coil.rotation.x = Math.PI / 2;
+        coil.position.set(-0.10 + side * 0.39, 0.54 + row * 0.20, 0.06);
+        this.muffleGroup.add(coil);
+      }
+    }
+
+    // Цифровое табло ПИД-контроллера муфельной печи (на правом блоке управления)
+    this.muffleCanvas = document.createElement('canvas');
+    this.muffleCanvas.width = 256;
+    this.muffleCanvas.height = 128;
+    this.muffleCtx = this.muffleCanvas.getContext('2d');
+    this._drawLcdCanvas(this.muffleCtx, '#1c0a05', '#fb923c', 'МУФЕЛЬ ПМ-1000', 'ВЫКЛ', 'КАМЕРА: 22 °C');
+    this.muffleTex = new THREE.CanvasTexture(this.muffleCanvas);
+    this.muffleTex.colorSpace = THREE.SRGBColorSpace;
+
+    const mfScreen = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.36, 0.19),
+      new THREE.MeshBasicMaterial({ map: this.muffleTex })
+    );
+    mfScreen.position.set(0.54, 0.96, 0.565);
+
+    const mfBtnRed = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.032, 0.032, 0.03, 16),
+      new THREE.MeshStandardMaterial({ color: '#ea580c', emissive: '#ea580c', emissiveIntensity: 0.35 })
+    );
+    mfBtnRed.rotation.x = Math.PI / 2;
+    mfBtnRed.position.set(0.54, 0.66, 0.565);
+    this.muffleGroup.add(mfScreen, mfBtnRed);
+
+    // Откидная/распашная теплоизолированная дверца на левых петлях со смотровым кварцевым окошком
+    this.muffleDoorPivot = new THREE.Group();
+    this.muffleDoorPivot.position.set(-0.56, 0.77, 0.54);
+
+    const doorPlate = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.84, 0.10), lightSteelMat);
+    doorPlate.position.set(0.46, 0, 0.04);
+    doorPlate.castShadow = true;
+
+    const doorBrick = new THREE.Mesh(
+      new THREE.BoxGeometry(0.74, 0.66, 0.12),
+      new THREE.MeshStandardMaterial({ color: '#f5f5f4', roughness: 0.92 })
+    );
+    doorBrick.position.set(0.46, 0, -0.05);
+
+    this.muffleWindowMat = new THREE.MeshBasicMaterial({ color: '#1e293b' });
+    const doorWindow = new THREE.Mesh(new THREE.PlaneGeometry(0.18, 0.14), this.muffleWindowMat);
+    doorWindow.position.set(0.46, 0.12, 0.095);
+
+    const doorHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.34, 12), darkMetal);
+    doorHandle.position.set(0.84, 0, 0.14);
+
+    this.muffleDoorPivot.add(doorPlate, doorBrick, doorWindow, doorHandle);
+    this.muffleGroup.add(this.muffleDoorPivot);
+
+    // Огнеупорная шамотная подставка перед муфельной печью (для остывания тигля / электролиза на Столе 3)
+    const coolPad = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.44, 0.46, 0.06, 32),
+      new THREE.MeshStandardMaterial({ color: '#d6d3d1', roughness: 0.85 })
+    );
+    coolPad.position.set(-0.10, 0.03, 0.96);
+    coolPad.receiveShadow = true;
+    this.muffleGroup.add(coolPad);
+
+    const mfHit = new THREE.Mesh(
+      new THREE.BoxGeometry(1.56, 1.48, 1.18),
+      new THREE.MeshBasicMaterial({ visible: false })
+    );
+    mfHit.position.set(0, 0.74, 0);
+    mfHit.userData = { action: 'muffle', tip: 'Муфельная печь ПМ-1000: нажмите для выбора режима прокаливания (Выкл → 600 °C → 950 °C)' };
+    this.interactables.push(mfHit);
+    this.muffleGroup.add(mfHit);
+    this.scene.add(this.muffleGroup);
+
+    // 7. Электролизная установка на Столе 3: блок питания DC 12 В + графитовые электроды
+    this.electrolysisGroup = new THREE.Group();
+
+    const psuX = -6.18;
+    const psuZ = 0.28;
+    this.psuPos = new THREE.Vector3(psuX, 0.08, psuZ + 0.22);
+    const psuBox = new THREE.Mesh(
+      new THREE.BoxGeometry(0.56, 0.38, 0.42),
+      new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.45, metalness: 0.35 })
+    );
+    psuBox.position.set(psuX, 0.19, psuZ);
+    psuBox.castShadow = true;
+
+    this.psuCanvas = document.createElement('canvas');
+    this.psuCanvas.width = 256;
+    this.psuCanvas.height = 128;
+    this.psuCtx = this.psuCanvas.getContext('2d');
+    this._drawLcdCanvas(this.psuCtx, '#062e22', '#34d399', 'DC 12.0 В', '0.00 А', 'ЭЛЕКТРОЛИЗ');
+    this.psuTex = new THREE.CanvasTexture(this.psuCanvas);
+    this.psuTex.colorSpace = THREE.SRGBColorSpace;
+
+    const psuScreen = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.42, 0.21),
+      new THREE.MeshBasicMaterial({ map: this.psuTex })
+    );
+    psuScreen.position.set(psuX, 0.23, psuZ + 0.212);
+
+    const termBlack = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.022, 0.022, 0.05, 14),
+      new THREE.MeshStandardMaterial({ color: '#0f172a', roughness: 0.4 })
+    );
+    termBlack.rotation.x = Math.PI / 2;
+    termBlack.position.set(psuX - 0.13, 0.08, psuZ + 0.22);
+
+    const termRed = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.022, 0.022, 0.05, 14),
+      new THREE.MeshStandardMaterial({ color: '#dc2626', roughness: 0.4 })
+    );
+    termRed.rotation.x = Math.PI / 2;
+    termRed.position.set(psuX + 0.13, 0.08, psuZ + 0.22);
+
+    const psuHit = new THREE.Mesh(
+      new THREE.BoxGeometry(0.62, 0.45, 0.48),
+      new THREE.MeshBasicMaterial({ visible: false })
+    );
+    psuHit.position.set(psuX, 0.22, psuZ);
+    psuHit.userData = { action: 'electrolysis', tip: 'Источник постоянного тока 12 В (нажмите для вкл/выкл электролиза)' };
+    this.interactables.push(psuHit);
+
+    // Держатель и два погружных графитовых электрода (опускаются в сосуд только при electrolysisOn)
+    this.electrodeRig = new THREE.Group();
+    this.electrodeRig.visible = false;
+    const elBridge = new THREE.Mesh(
+      new THREE.BoxGeometry(0.28, 0.045, 0.09),
+      new THREE.MeshStandardMaterial({ color: '#334155', roughness: 0.6 })
+    );
+    this.cathodeMat = new THREE.MeshStandardMaterial({ color: '#27272a', roughness: 0.55, metalness: 0.35 });
+    this.anodeMat = new THREE.MeshStandardMaterial({ color: '#27272a', roughness: 0.65, metalness: 0.25 });
+
+    this.cathodeMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.019, 0.019, 0.85, 16), this.cathodeMat);
+    this.cathodeMesh.position.set(-0.075, -0.42, 0);
+    this.anodeMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.019, 0.019, 0.85, 16), this.anodeMat);
+    this.anodeMesh.position.set(0.075, -0.42, 0);
+
+    const pinBlack = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.06, 12), new THREE.MeshStandardMaterial({ color: '#0f172a' }));
+    pinBlack.position.set(-0.075, 0.04, 0);
+    const pinRed = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.06, 12), new THREE.MeshStandardMaterial({ color: '#dc2626' }));
+    pinRed.position.set(0.075, 0.04, 0);
+
+    this.electrodeRig.add(elBridge, this.cathodeMesh, this.anodeMesh, pinBlack, pinRed);
+
+    this.wireCathodeMesh = null;
+    this.wireAnodeMesh = null;
+    this.electrolysisGroup.add(psuBox, psuScreen, termBlack, termRed, psuHit, this.electrodeRig);
+    this.scene.add(this.electrolysisGroup);
   }
 
-  _rebuildElectrodeWires(kind) {
+  _getVesselWorkstationPos(state) {
+    const bench = state?.bench || 1;
+    const kind = state?.vessel || 'flask';
+    if (bench === 2) {
+      // Стол 2: непосредственно на стеклокерамической платформе магнитной мешалки с подогревом!
+      return new THREE.Vector3(4.90, kind === 'tube' ? 0.24 : 0.208, 0.01);
+    }
+    if (bench === 3) {
+      if ((state?.muffleLvl || 0) > 0) {
+        // Внутри раскалённой шамотной камеры муфельной печи ПМ-1000!
+        return new THREE.Vector3(-4.85, 0.425, -0.36);
+      }
+      // На огнеупорном подиуме перед муфельной печью (остывание или электролиз)
+      return new THREE.Vector3(-4.85, 0.062, 0.54);
+    }
+    // Стол 1: на треножнике над спиртовкой (или в лапке штатива для пробирки)
+    return new THREE.Vector3(this.vesselX, kind === 'tube' ? 0.92 : this.vesselBaseY, 0);
+  }
+
+  _rebuildElectrodeWires(kind, vPos) {
     if (this.wireCathodeMesh) {
       this.electrolysisGroup.remove(this.wireCathodeMesh);
       this.wireCathodeMesh.geometry.dispose();
+      this.wireCathodeMesh = null;
     }
     if (this.wireAnodeMesh) {
       this.electrolysisGroup.remove(this.wireAnodeMesh);
       this.wireAnodeMesh.geometry.dispose();
+      this.wireAnodeMesh = null;
     }
-    const vY = kind === 'tube' ? 0.92 : this.vesselBaseY;
-    const topY = vY + this._mouthHeight(kind) + 0.05;
-    const elH = kind === 'evap' ? 0.48 : 0.88;
+    const pos = vPos || this.curVesselPos || new THREE.Vector3(-4.85, 0.062, 0.54);
+    const topY = pos.y + this._mouthHeight(kind) + 0.05;
+    const elH = (kind === 'evap' || kind === 'crucible') ? 0.46 : 0.88;
     this.cathodeMesh.scale.y = elH / 0.85;
     this.cathodeMesh.position.y = -elH / 2;
     this.anodeMesh.scale.y = elH / 0.85;
     this.anodeMesh.position.y = -elH / 2;
-    this.electrodeRig.position.set(this.vesselX, topY, 0);
+    this.electrodeRig.position.set(pos.x, topY, pos.z);
 
+    const psuX = -6.18;
+    const psuZ = 0.50;
+    const midX = (psuX + pos.x) * 0.5;
     const cCurve = new THREE.CatmullRomCurve3([
-      new THREE.Vector3(-1.49, 0.08, 0.08),
-      new THREE.Vector3(-1.25, topY + 0.22, 0.06),
-      new THREE.Vector3(this.vesselX - 0.075, topY + 0.06, 0)
+      new THREE.Vector3(psuX - 0.13, 0.08, psuZ),
+      new THREE.Vector3(midX - 0.15, topY + 0.25, (psuZ + pos.z) * 0.5),
+      new THREE.Vector3(pos.x - 0.075, topY + 0.06, pos.z)
     ]);
     const aCurve = new THREE.CatmullRomCurve3([
-      new THREE.Vector3(-1.23, 0.08, 0.08),
-      new THREE.Vector3(-0.92, topY + 0.28, -0.04),
-      new THREE.Vector3(this.vesselX + 0.075, topY + 0.06, 0)
+      new THREE.Vector3(psuX + 0.13, 0.08, psuZ),
+      new THREE.Vector3(midX + 0.10, topY + 0.30, (psuZ + pos.z) * 0.5 - 0.06),
+      new THREE.Vector3(pos.x + 0.075, topY + 0.06, pos.z)
     ]);
     this.wireCathodeMesh = new THREE.Mesh(
       new THREE.TubeGeometry(cCurve, 28, 0.011, 8, false),
@@ -1797,7 +2170,7 @@ export class Lab3DScene {
       }
       const tex = new THREE.CanvasTexture(c);
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-      tex.repeat.set(9, 4.5);
+      tex.repeat.set(16, 4.8);
       if (!bump) tex.colorSpace = THREE.SRGBColorSpace;
       return tex;
     };
@@ -1885,6 +2258,8 @@ export class Lab3DScene {
 
   syncState(state, analysis, simInfo = {}) {
     const prevVessel = this.lastState?.vessel;
+    const prevBench = this.lastState?.bench || 1;
+    const prevMuffle = this.lastState?.muffleLvl || 0;
     const prevPrCount = this.lastAnalysis?.precipitates?.length || 0;
     this.lastState = state;
     this.lastAnalysis = analysis;
@@ -1892,9 +2267,26 @@ export class Lab3DScene {
 
     if (!this.webglSupported) return;
 
-    if (prevVessel !== state.vessel) {
+    const goalPos = this._getVesselWorkstationPos(state);
+    const curBench = state.bench || 1;
+    const curMuffle = state.muffleLvl || 0;
+
+    // Если сосуд переносят с одного стола на другой или ставят/вынимают из муфельной печи — запускаем плавную 3D-дугу переноса!
+    if (this.curVesselPos && (prevBench !== curBench || (curBench === 3 && (prevMuffle > 0) !== (curMuffle > 0)))) {
+      this.transferAnim = {
+        active: true,
+        t: 0,
+        dur: prevBench !== curBench ? 0.82 : 0.62,
+        from: this.curVesselPos.clone(),
+        to: goalPos.clone()
+      };
+      this.triggerSplash(0.42);
+      this.wake(2400);
+    }
+
+    if (prevVessel !== state.vessel || prevBench !== curBench || (prevMuffle > 0) !== (curMuffle > 0)) {
       this._rebuildDeliveryTube(state.vessel);
-      this._rebuildElectrodeWires(state.vessel);
+      this._rebuildElectrodeWires(state.vessel, goalPos);
     }
 
     // Обновляем цифровое ЖК-табло электронных весов при изменении массы смеси
@@ -1914,6 +2306,29 @@ export class Lab3DScene {
       const fg = analysis.currentAmp > 0 ? '#34d399' : '#f59e0b';
       this._drawLcdCanvas(this.psuCtx, '#062e22', fg, 'DC 12,0 В', ampStr, psuSub);
       this.psuTex.needsUpdate = true;
+    }
+
+    // Обновляем ЖК-табло магнитной мешалки с подогревом (Стол 2)
+    const hpSetStr = ['ВЫКЛ', '60 °C', '125 °C', '260 °C'][state.hotplateLvl || 0];
+    const hpMain = (state.hotplateLvl || 0) > 0 ? hpSetStr : (state.stirrerOn ? '600 rpm' : 'ВЫКЛ');
+    const hpSub = `${state.stirrerOn ? '600' : '0'} об/мин · t=${Math.round(state.temp)}°C`;
+    const hpKey = `${hpMain}|${hpSub}`;
+    if (hpKey !== this.lastHotplateKey && this.hotplateCtx) {
+      this.lastHotplateKey = hpKey;
+      const fg = (state.hotplateLvl || 0) > 0 ? '#fb923c' : (state.stirrerOn ? '#38bdf8' : '#94a3b8');
+      this._drawLcdCanvas(this.hotplateCtx, '#0f172a', fg, 'ТЕРМОМЕШАЛКА', hpMain, hpSub);
+      this.hotplateTex.needsUpdate = true;
+    }
+
+    // Обновляем ЖК-табло ПИД-контроллера муфельной печи ПМ-1000 (Стол 3)
+    const mfSetStr = ['ВЫКЛ', '600 °C', '950 °C'][state.muffleLvl || 0];
+    const mfSub = `ФАКТ: ${Math.round(state.temp)} °C`;
+    const mfKey = `${mfSetStr}|${mfSub}`;
+    if (mfKey !== this.lastMuffleKey && this.muffleCtx) {
+      this.lastMuffleKey = mfKey;
+      const fg = (state.muffleLvl || 0) > 0 ? '#fde047' : '#fb923c';
+      this._drawLcdCanvas(this.muffleCtx, '#1c0a05', fg, 'МУФЕЛЬ ПМ-1000', mfSetStr, mfSub);
+      this.muffleTex.needsUpdate = true;
     }
 
     // Цвет осадка на покоящемся бумажном фильтре
@@ -1954,6 +2369,8 @@ export class Lab3DScene {
 
     if (
       state.heatLvl > 0 ||
+      (state.hotplateLvl || 0) > 0 ||
+      (state.muffleLvl || 0) > 0 ||
       state.iceBathOn ||
       state.stirrerOn ||
       state.electrolysisOn ||
@@ -1981,7 +2398,8 @@ export class Lab3DScene {
         const km = Math.round((state.prog.dry_kmno4 || 0) * 10);
         const ce = Math.round((state.prog.cuo_eth || 0) * 10);
         const wh = Math.round((state.coatings.anhydrousWhite || 0) * 10);
-        return `${id}:${q}:${p}:${cu}:${ag}:${ch}:${vo}:${km}:${ce}:${wh}`;
+        const ca = Math.round((state.prog.calcine_caco3 || 0) * 10);
+        return `${id}:${q}:${p}:${cu}:${ag}:${ch}:${vo}:${km}:${ce}:${wh}:${ca}`;
       })
       .join('|');
 
@@ -2031,6 +2449,9 @@ export class Lab3DScene {
       }
       if (id === 'nh4cr2o7' && state.coatings.volcanoAsh > 0.15) {
         col = state.coatings.volcanoAsh > 0.45 ? '#166534' : '#65a30d';
+      }
+      if (id === 'caco3' && (state.prog.calcine_caco3 || 0) > 0.45) {
+        col = '#fef9c3';
       }
 
       const mat = new THREE.MeshStandardMaterial({
@@ -2122,10 +2543,65 @@ export class Lab3DScene {
     const sim = this.lastSimInfo || {};
     let busy = false;
 
-    // 1. Плавное движение камеры к выбранному ракурсу + орбита мышью
-    const P = CAMERA_PRESETS[this.presetId] || CAMERA_PRESETS.all;
-    const targetGoal = new THREE.Vector3(...P.target);
-    const baseOffset = new THREE.Vector3(...P.pos).sub(targetGoal).multiplyScalar(this.camSpherical.zoom);
+    const curBench = s?.bench || 1;
+    const goalVesselPos = this._getVesselWorkstationPos(s);
+
+    // 0. Анимация дугового переноса сосуда между столами (или в камеру муфельной печи и обратно)
+    if (this.transferAnim.active) {
+      busy = true;
+      this.transferAnim.t += dt;
+      const rawP = Math.min(1, this.transferAnim.t / this.transferAnim.dur);
+      const easeP = rawP < 0.5 ? 4 * rawP * rawP * rawP : 1 - Math.pow(-2 * rawP + 2, 3) / 2;
+      this.curVesselPos.lerpVectors(this.transferAnim.from, this.transferAnim.to, easeP);
+      this.curVesselPos.y += Math.sin(rawP * Math.PI) * 0.48;
+      if (rawP >= 1) {
+        this.transferAnim.active = false;
+        this.curVesselPos.copy(goalVesselPos);
+      }
+    } else {
+      this.curVesselPos.copy(goalVesselPos);
+    }
+
+    const curX = this.curVesselPos.x;
+    const vesselY = this.curVesselPos.y;
+    const curZ = this.curVesselPos.z;
+
+    // 1. Плавное движение камеры к выбранному столу / ракурсу + орбита мышью
+    let P = CAMERA_PRESETS[this.presetId] || CAMERA_PRESETS.all;
+    let targetGoal;
+    let rawPosGoal;
+    if (this.presetId === 'hall' || this.presetId === 'gas') {
+      targetGoal = new THREE.Vector3(...P.target);
+      rawPosGoal = new THREE.Vector3(...P.pos);
+    } else if (this.presetId === 'vessel') {
+      targetGoal = new THREE.Vector3(curX, vesselY + 0.44, curZ);
+      rawPosGoal = new THREE.Vector3(curX, vesselY + 0.96, curZ + 3.95);
+    } else if (this.presetId === 'lamp') {
+      if (curBench === 2) {
+        targetGoal = new THREE.Vector3(4.90, 0.25, 0.15);
+        rawPosGoal = new THREE.Vector3(4.90, 0.95, 3.15);
+      } else if (curBench === 3) {
+        targetGoal = new THREE.Vector3(-4.80, 0.72, -0.25);
+        rawPosGoal = new THREE.Vector3(-4.65, 1.15, 3.35);
+      } else {
+        targetGoal = new THREE.Vector3(...P.target);
+        rawPosGoal = new THREE.Vector3(...P.pos);
+      }
+    } else {
+      // 'all' — обзор активного лабораторного стола
+      if (curBench === 2) {
+        targetGoal = new THREE.Vector3(4.95, 0.72, 0.05);
+        rawPosGoal = new THREE.Vector3(4.95, 2.38, 5.55);
+      } else if (curBench === 3) {
+        targetGoal = new THREE.Vector3(-5.20, 0.80, -0.15);
+        rawPosGoal = new THREE.Vector3(-5.15, 2.28, 5.95);
+      } else {
+        targetGoal = new THREE.Vector3(...P.target);
+        rawPosGoal = new THREE.Vector3(...P.pos);
+      }
+    }
+
+    const baseOffset = rawPosGoal.clone().sub(targetGoal).multiplyScalar(this.camSpherical.zoom);
     const cosY = Math.cos(this.camSpherical.yaw);
     const sinY = Math.sin(this.camSpherical.yaw);
     const rx = baseOffset.x * cosY - baseOffset.z * sinY;
@@ -2136,10 +2612,15 @@ export class Lab3DScene {
     if (this.camPosCur.distanceTo(posGoal) > 0.002 || this.camTargetCur.distanceTo(targetGoal) > 0.002) {
       busy = true;
     }
-    this.camPosCur.lerp(posGoal, Math.min(1, dt * 8));
-    this.camTargetCur.lerp(targetGoal, Math.min(1, dt * 8));
-    if (Math.abs(this.camera.fov - P.fov) > 0.05) {
-      this.camera.fov += (P.fov - this.camera.fov) * Math.min(1, dt * 8);
+    this.camPosCur.lerp(posGoal, Math.min(1, dt * 7.5));
+    this.camTargetCur.lerp(targetGoal, Math.min(1, dt * 7.5));
+
+    const aspect = this.camera.aspect || 1.4;
+    const desiredFov = aspect < 1.38
+      ? Math.min(49, P.fov * Math.pow(1.38 / Math.max(0.72, aspect), 0.56))
+      : P.fov;
+    if (Math.abs(this.camera.fov - desiredFov) > 0.05) {
+      this.camera.fov += (desiredFov - this.camera.fov) * Math.min(1, dt * 8);
       this.camera.updateProjectionMatrix();
       busy = true;
     }
@@ -2148,16 +2629,18 @@ export class Lab3DScene {
 
     if (!s || !a) return busy;
 
-    // 2. Посуда, штатив/треножник, ледяная баня, мешалка, бюретка, электролизёр и уровень жидкости
+    // 2. Посуда, штатив/треножник, термомешалка (Стол 2), муфельная печь (Стол 3), ледяная баня, бюретка и электролизёр
     const kind = s.vessel;
-    const vesselY = kind === 'tube' ? 0.92 : this.vesselBaseY;
-    this.vesselRoot.position.set(this.vesselX, vesselY, 0);
-    for (const k of ['flask', 'round', 'tube', 'beaker', 'evap']) {
+    this.vesselRoot.position.set(curX, vesselY, curZ);
+    for (const k of ['flask', 'round', 'tube', 'beaker', 'evap', 'crucible']) {
       if (this.vesselMeshes[k]) this.vesselMeshes[k].visible = k === kind;
     }
-    this.tripodGroup.visible = kind !== 'tube';
-    this.retortGroup.visible = kind === 'tube' || kind === 'round';
-    this.gasRigGroup.visible = !!s.tubeOn && VESSELS[kind].allowTube;
+    this.tripodGroup.visible = curBench !== 1 || kind !== 'tube';
+    this.retortGroup.visible = curBench === 1 && (kind === 'tube' || kind === 'round');
+    if (this.hotplateClamp) {
+      this.hotplateClamp.visible = curBench === 2 && (kind === 'tube' || kind === 'round');
+    }
+    this.gasRigGroup.visible = curBench === 1 && !!s.tubeOn && VESSELS[kind].allowTube;
 
     const cap = VESSELS[kind].cap;
     const maxH = this._liquidMaxHeight(kind);
@@ -2168,10 +2651,10 @@ export class Lab3DScene {
     const mouthWorldY = vesselY + mouthLocalY;
 
     // 2а. Ледяная баня вокруг сосуда
-    this.iceBathGroup.visible = !!s.iceBathOn;
-    if (s.iceBathOn) {
+    this.iceBathGroup.visible = !!s.iceBathOn && (s.muffleLvl || 0) === 0;
+    if (this.iceBathGroup.visible) {
       busy = true;
-      this.iceBathGroup.position.set(this.vesselX, vesselY - 0.04, 0);
+      this.iceBathGroup.position.set(curX, vesselY - 0.04, curZ);
       const tIce = ts / 1000;
       for (const ic of this.iceCubes) {
         ic.mesh.position.y = ic.baseY + Math.sin(tIce * 2.1 + ic.ph) * 0.012;
@@ -2179,29 +2662,72 @@ export class Lab3DScene {
       }
     }
 
-    // 2б. Магнитная мешалка (вращающийся фторопластовый якорь + вихревое покачивание мениска)
-    this.stirBarMesh.visible = !!s.stirrerOn;
-    if (s.stirrerOn) {
+    // 2б. Магнитная мешалка с подогревом (вращение якоря + ручки + свечение керамической конфорки)
+    this.stirBarMesh.visible = !!s.stirrerOn && (s.muffleLvl || 0) === 0;
+    if (this.stirBarMesh.visible) {
       busy = true;
       this.stirBarMesh.rotation.y += dt * 22.0;
       if (a.wet) {
         this.slosh.angle = 0.065 * Math.sin(ts / 95);
       }
     }
+    if (this.hotplateRpmKnob && this.hotplateTempKnob) {
+      this.hotplateRpmKnob.rotation.y = s.stirrerOn ? -1.4 : 0.8;
+      this.hotplateTempKnob.rotation.y = [0.9, -0.1, -0.95, -1.85][s.hotplateLvl || 0] || 0.9;
+      const targetHpGlow = [0, 0.42, 0.95, 1.65][s.hotplateLvl || 0] || 0;
+      if (Math.abs(this.hotplateGlow - targetHpGlow) > 0.01) busy = true;
+      this.hotplateGlow += (targetHpGlow - this.hotplateGlow) * Math.min(1, dt * 3.0);
+      this.hotplateRingMat.emissiveIntensity = this.hotplateGlow * (0.92 + 0.08 * Math.sin(ts / 140));
+    }
 
-    // 2в. Титровальная бюретка 25 мл над сосудом
-    this.buretteGroup.visible = !!s.buretteOn;
-    if (s.buretteOn) {
-      this.buretteColumn.position.set(this.vesselX, mouthWorldY + 0.18, 0);
+    // 2в. Муфельная печь ПМ-1000 на Столе 3 (распахивание дверцы + багрово-оранжевый накал шамотной камеры!)
+    if (this.muffleDoorPivot) {
+      const wantDoorOpen = curBench === 3 && (s.muffleLvl || 0) > 0;
+      const targetDoorAng = wantDoorOpen ? -1.92 : 0.0;
+      if (Math.abs(this.muffleDoorAngle - targetDoorAng) > 0.005) busy = true;
+      this.muffleDoorAngle += (targetDoorAng - this.muffleDoorAngle) * Math.min(1, dt * 6.5);
+      this.muffleDoorPivot.rotation.y = this.muffleDoorAngle;
+
+      const targetMfGlow = (s.muffleLvl || 0) === 2 ? 1.55 : ((s.muffleLvl || 0) === 1 ? 0.85 : Math.max(0, (s.temp - 280) / 500));
+      if (Math.abs(this.muffleGlow - targetMfGlow) > 0.01) busy = true;
+      this.muffleGlow += (targetMfGlow - this.muffleGlow) * Math.min(1, dt * 2.2);
+      const pulse = 0.94 + 0.06 * Math.sin(ts / 180);
+      this.muffleChamberMat.emissiveIntensity = this.muffleGlow * pulse;
+      this.muffleCoilMat.emissiveIntensity = this.muffleGlow * 1.45 * pulse;
+      this.muffleLight.intensity = this.muffleGlow * 2.6 * pulse;
+      if (this.muffleGlow > 0.08) {
+        this.muffleWindowMat.color.set('#1e293b').lerp(new THREE.Color('#ff7b00'), Math.min(1, this.muffleGlow));
+      } else {
+        this.muffleWindowMat.color.set('#1e293b');
+      }
+    }
+
+    // Тепловое свечение раскалённых сухих веществ в тигле/чашке при T > 520 °C
+    const solidIncandescence = !a.wet && s.temp > 520 ? Math.min(1.2, (s.temp - 520) / 380) : 0;
+    for (const child of this.solidsGroup.children) {
+      if (child.material && child.material.emissive) {
+        child.material.emissive.set('#ff5500');
+        child.material.emissiveIntensity = solidIncandescence;
+      }
+    }
+
+    // 2г. Титровальная бюретка 25 мл над сосудом
+    this.buretteGroup.visible = !!s.buretteOn && (s.muffleLvl || 0) === 0;
+    if (this.buretteGroup.visible) {
+      this.buretteStand.position.set(curX, 0, curZ);
+      this.buretteColumn.position.set(curX, mouthWorldY + 0.18, curZ);
       const remFrac = Math.max(0.06, 1 - ((s.buretteUsedMl || 0) % 25) / 25);
       const bH = 0.96 * remFrac;
       this.buretteLiqMesh.scale.set(1, remFrac, 1);
       this.buretteLiqMesh.position.y = 0.12 + bH / 2;
     }
 
-    // 2г. Электролизная установка и покрытие катода металлом (Cu⁰ / Ag⁰)
-    this.electrolysisGroup.visible = !!s.electrolysisOn;
-    if (s.electrolysisOn) {
+    // 2д. Электролизная установка (БП стоит на Столе 3 постоянно, а электроды опускаются при electrolysisOn!)
+    const elActive = !!s.electrolysisOn && !this.transferAnim.active;
+    this.electrodeRig.visible = elActive;
+    if (this.wireCathodeMesh) this.wireCathodeMesh.visible = elActive;
+    if (this.wireAnodeMesh) this.wireAnodeMesh.visible = elActive;
+    if (elActive) {
       if ((s.coatings.copperPlated || 0) > 0.12) {
         this.cathodeMat.color.set('#c8753c');
         this.cathodeMat.metalness = 0.85;
@@ -2245,10 +2771,10 @@ export class Lab3DScene {
     if (Math.abs(this.slosh.angle) > 0.002 || Math.abs(this.slosh.vel) > 0.005) busy = true;
 
     const sloshNormal = new THREE.Vector3(Math.sin(this.slosh.angle * 0.25), -1, 0).normalize();
-    this.liqClipPlane.setFromNormalAndCoplanarPoint(sloshNormal, new THREE.Vector3(this.vesselX, liqWorldY, 0));
+    this.liqClipPlane.setFromNormalAndCoplanarPoint(sloshNormal, new THREE.Vector3(curX, liqWorldY, curZ));
     this.gasClipPlane.setFromNormalAndCoplanarPoint(
       new THREE.Vector3(0, 1, 0),
-      new THREE.Vector3(this.vesselX, a.wet ? liqWorldY : vesselY + 0.02, 0)
+      new THREE.Vector3(curX, a.wet ? liqWorldY : vesselY + 0.02, curZ)
     );
 
     this.liqMat.color.lerp(new THREE.Color(a.liquidColor || '#dff2fc'), Math.min(1, dt * 6));
@@ -2295,7 +2821,7 @@ export class Lab3DScene {
       uA.uTint.value.set(alkaliFlameColor);
       uA.uTintMix.value = 0.88;
       if (Math.random() < 0.22) {
-        this._spawnSparks(this.vesselX + alkaliFlamePos.x, vesselY + alkaliFlamePos.y + 0.05, alkaliFlamePos.z, 1, alkaliFlameColor, 0.55);
+        this._spawnSparks(curX + alkaliFlamePos.x, vesselY + alkaliFlamePos.y + 0.05, curZ + alkaliFlamePos.z, 1, alkaliFlameColor, 0.55);
       }
     } else if (this.alkaliFlameMesh) {
       this.alkaliFlameMesh.visible = false;
@@ -2411,6 +2937,7 @@ export class Lab3DScene {
     // Затухание вспышек (хлопок H₂, вспышка Mg)
     if (this.flashEffect.intensity > 0.02) {
       busy = true;
+      this.flashLight.position.set(curX, vesselY + 0.45, curZ + 0.40);
       this.flashLight.color.set(this.flashEffect.color);
       this.flashLight.intensity = this.flashEffect.intensity;
       this.flashEffect.intensity *= Math.pow(0.03, dt);
@@ -2450,7 +2977,7 @@ export class Lab3DScene {
 
     let bIdx = 0;
     for (const b of this.bubbles) {
-      this._dummy.position.set(this.vesselX + b.x, vesselY + b.y, b.z);
+      this._dummy.position.set(curX + b.x, vesselY + b.y, curZ + b.z);
       this._dummy.scale.setScalar(b.r);
       this._dummy.rotation.set(0, 0, 0);
       this._dummy.updateMatrix();
@@ -2470,9 +2997,9 @@ export class Lab3DScene {
       }
       if (Math.random() < 0.16) {
         this._spawnSparks(
-          this.vesselX + (Math.random() - 0.5) * 0.16,
+          curX + (Math.random() - 0.5) * 0.16,
           vesselY + 0.08 + Math.random() * Math.max(0.06, liqLocalY - 0.1),
-          (Math.random() - 0.5) * 0.16,
+          curZ + (Math.random() - 0.5) * 0.16,
           1,
           '#fde047',
           0.22
@@ -2493,7 +3020,7 @@ export class Lab3DScene {
     let fIdx = 0;
     for (const f of this.flakes) {
       if (!a.wet) break;
-      this._dummy.position.set(this.vesselX + f.x, vesselY + Math.min(f.y, liqLocalY - 0.02), f.z);
+      this._dummy.position.set(curX + f.x, vesselY + Math.min(f.y, liqLocalY - 0.02), curZ + f.z);
       this._dummy.scale.setScalar(f.size);
       this._dummy.rotation.set(f.rot, f.rot * 0.7, 0);
       this._dummy.updateMatrix();
@@ -2541,26 +3068,31 @@ export class Lab3DScene {
       this.troughBubbleInst.count = 0;
     }
 
-    // 7. Пар, бурый газ, извержение «химического вулкана» и струйки дыма горения
+    // 7. Пар, бурый газ, дымок прокаливания в муфеле, извержение «вулкана» и струйки дыма горения
     const mouthY = vesselY + this._mouthHeight(kind);
     if (sim.volcanoErupting) {
       busy = true;
       if (Math.random() < 0.85) {
-        this._spawnSparks(this.vesselX, vesselY + 0.18, 0, 3, Math.random() < 0.5 ? '#fb923c' : '#fde047', 1.35);
+        this._spawnSparks(curX, vesselY + 0.18, curZ, 3, Math.random() < 0.5 ? '#fb923c' : '#fde047', 1.35);
       }
       if (Math.random() < 0.42) {
-        this._spawnSmokePuff(this.vesselX, mouthY + 0.02, 0, '#3f6212', 0.18 + Math.random() * 0.09, 0.55);
+        this._spawnSmokePuff(curX, mouthY + 0.02, curZ, '#3f6212', 0.18 + Math.random() * 0.09, 0.55);
       }
+      this.flashLight.position.set(curX, vesselY + 0.4, curZ + 0.35);
       this.flashLight.color.set('#f97316');
       this.flashLight.intensity = Math.max(this.flashLight.intensity, 3.2 + Math.sin(tSec * 37) * 1.1);
     }
-    const emitPlume = (a.wet && s.temp > 72 && !s.tubeOn) || (s.headspace?.gas === 'NO2' && !s.tubeOn) || (s.headspace?.gas === 'SO2' && !s.tubeOn);
+    const calciningDry = !a.wet && s.temp > 620 && (sim.gasRate || 0) > 0.05;
+    const emitPlume = (a.wet && s.temp > 72 && !(curBench === 1 && s.tubeOn))
+      || (s.headspace?.gas === 'NO2' && !(curBench === 1 && s.tubeOn))
+      || (s.headspace?.gas === 'SO2' && !(curBench === 1 && s.tubeOn))
+      || calciningDry;
     if (emitPlume && Math.random() < 0.25) {
       this._spawnSmokePuff(
-        this.vesselX,
+        curX,
         mouthY + 0.03,
-        0,
-        s.headspace?.gas === 'NO2' ? '#b45309' : '#f1f5f9',
+        curZ + ((s.muffleLvl || 0) > 0 && curBench === 3 ? 0.25 : 0),
+        s.headspace?.gas === 'NO2' ? '#b45309' : (calciningDry ? '#fef3c7' : '#f1f5f9'),
         0.16 + Math.random() * 0.08,
         0.42
       );
@@ -2618,7 +3150,7 @@ export class Lab3DScene {
         this.streamMesh.visible = false;
       } else {
         this.pourBottleGroup.visible = true;
-        this.pourBottleGroup.position.set(this.vesselX + 0.32, mouthY + 0.28, 0);
+        this.pourBottleGroup.position.set(curX + 0.32, mouthY + 0.28, curZ);
         const tilt = Math.sin(Math.min(1, p * 1.25) * Math.PI) * 1.95;
         this.pourBottleGroup.rotation.z = tilt;
 
@@ -2629,7 +3161,7 @@ export class Lab3DScene {
           this.streamMesh.visible = true;
           this.streamMat.color.set(this.pourAnim.color);
           this.streamMesh.scale.set(1, h, 1);
-          this.streamMesh.position.set(this.vesselX + 0.02, botY + h / 2, 0);
+          this.streamMesh.position.set(curX + 0.02, botY + h / 2, curZ);
         } else {
           this.streamMesh.visible = false;
         }
@@ -2651,7 +3183,7 @@ export class Lab3DScene {
         const endY = a.wet ? liqWorldY : vesselY + 0.05;
         this.buretteDropMesh.visible = true;
         this.buretteDropMat.color.set(this.dripAnim.color);
-        this.buretteDropMesh.position.set(this.vesselX, startY - (startY - endY) * (dp * dp), 0);
+        this.buretteDropMesh.position.set(curX, startY - (startY - endY) * (dp * dp), curZ);
       }
     } else {
       this.buretteDropMesh.visible = false;
@@ -2667,7 +3199,7 @@ export class Lab3DScene {
         this.filterActiveGroup.visible = false;
       } else {
         this.filterActiveGroup.visible = true;
-        this.filterActiveGroup.position.set(this.vesselX, mouthY + 0.04, 0);
+        this.filterActiveGroup.position.set(curX, mouthY + 0.04, curZ);
         this.actFilterPaperMat.color.set('#ffffff').lerp(new THREE.Color(this.filterAnim.cakeColor), Math.min(1, fp * 1.5));
         this.filterFiltrateStream.visible = fp > 0.12 && fp < 0.90;
         this.filterFiltrateStream.material.color.set(a.liquidColor || '#dff2fc');
@@ -2694,11 +3226,14 @@ export class Lab3DScene {
         const swing = Math.sin(p * Math.PI);
 
         if (k === 'splint') {
-          const tx = s.tubeOn ? 1.55 : this.vesselX;
-          const ty = s.tubeOn ? 1.52 : mouthY + 0.05;
+          const useCollector = curBench === 1 && s.tubeOn;
+          const tx = useCollector ? 1.55 : curX;
+          const ty = useCollector ? 1.52 : mouthY + 0.05;
+          const tz = useCollector ? 0 : curZ;
           const px = tx + (1 - swing) * 0.42;
           const py = ty + (1 - swing) * 0.24;
-          this.propGroup.position.set(px, py, 0.08);
+          const pz = tz + 0.08;
+          this.propGroup.position.set(px, py, pz);
 
           const snuffed = !!ex.extinguish && p > 0.40;
           const isH2Pop = ex.flashColor === '#60a5fa';
@@ -2723,31 +3258,31 @@ export class Lab3DScene {
           if (p > 0.34 && !this.toolAnim.burstDone) {
             this.toolAnim.burstDone = true;
             if (isO2Flare) {
-              this._spawnSparks(px, py + 0.06, 0.08, 20, '#fde047', 1.15);
+              this._spawnSparks(px, py + 0.06, pz, 20, '#fde047', 1.15);
             } else if (isSootyC2H2) {
-              this._spawnSparks(px, py + 0.06, 0.08, 12, '#fb923c', 0.95);
-              this._spawnSmokePuff(px, py + 0.12, 0.08, '#18181b', 0.20, 0.46);
-              this._spawnSmokePuff(px - 0.03, py + 0.16, 0.08, '#27272a', 0.22, 0.50);
+              this._spawnSparks(px, py + 0.06, pz, 12, '#fb923c', 0.95);
+              this._spawnSmokePuff(px, py + 0.12, pz, '#18181b', 0.20, 0.46);
+              this._spawnSmokePuff(px - 0.03, py + 0.16, pz, '#27272a', 0.22, 0.50);
             } else if (isH2Pop) {
-              this._spawnSparks(tx, ty, 0.04, 12, '#93c5fd', 1.25);
-              this._spawnSmokePuff(tx, ty + 0.04, 0, '#e0f2fe', 0.22, 0.35);
+              this._spawnSparks(tx, ty, tz + 0.04, 12, '#93c5fd', 1.25);
+              this._spawnSmokePuff(tx, ty + 0.04, tz, '#e0f2fe', 0.22, 0.35);
             } else if (ex.extinguish) {
-              this._spawnSmokePuff(px, py + 0.03, 0.08, '#cbd5e1', 0.11, 0.30);
-              this._spawnSmokePuff(px + 0.02, py + 0.06, 0.08, '#94a3b8', 0.13, 0.34);
+              this._spawnSmokePuff(px, py + 0.03, pz, '#cbd5e1', 0.11, 0.30);
+              this._spawnSmokePuff(px + 0.02, py + 0.06, pz, '#94a3b8', 0.13, 0.34);
             }
           }
           if (isSootyC2H2 && p > 0.34 && p < 0.85 && Math.random() < 0.38) {
-            this._spawnSmokePuff(px, py + 0.14, 0.08, '#18181b', 0.16, 0.48);
+            this._spawnSmokePuff(px, py + 0.14, pz, '#18181b', 0.16, 0.48);
           }
           if (snuffed && Math.random() < 0.22) {
-            this._spawnSmokePuff(px, py + 0.02, 0.08, '#cbd5e1', 0.09, 0.28);
+            this._spawnSmokePuff(px, py + 0.02, pz, '#cbd5e1', 0.09, 0.28);
           }
 
           // Волна хлопка водорода H₂
           if (isH2Pop && p > 0.32 && p < 0.66) {
             const kp = (p - 0.32) / 0.34;
             this.h2PopMesh.visible = true;
-            this.h2PopMesh.position.set(tx, ty, 0.04);
+            this.h2PopMesh.position.set(tx, ty, tz + 0.04);
             this.h2PopMesh.scale.setScalar(0.6 + kp * 3.4);
             this.h2PopMat.opacity = (1 - kp) * 0.55;
           } else {
@@ -2769,10 +3304,13 @@ export class Lab3DScene {
           this.h2PopMesh.visible = false;
           const isClBurn = !!ex.clBurn;
           const isSulfur = !!ex.sulfurBurn;
+          const baseX = (isClBurn || isSulfur) ? curX : this.vesselX;
+          const baseZ = (isClBurn || isSulfur) ? curZ : 0;
           const targetY = (isClBurn || isSulfur) ? vesselY + 0.38 : 0.94;
-          const px = this.vesselX + (1 - swing) * 0.52;
+          const px = baseX + (1 - swing) * 0.52;
           const py = targetY + (1 - swing) * 0.32;
-          this.propGroup.position.set(px, py, 0.06);
+          const pz = baseZ + 0.06;
+          this.propGroup.position.set(px, py, pz);
 
           const isMg = ex.metal === 'mg';
           const isCu = ex.metal === 'cu';
@@ -2819,13 +3357,13 @@ export class Lab3DScene {
           }
 
           if (isMg && p > 0.25 && p < 0.80) {
-            if (Math.random() < 0.55) this._spawnSparks(px, py + 0.03, 0.06, 2, '#ffffff', 1.15);
-            if (Math.random() < 0.30) this._spawnSmokePuff(px, py + 0.08, 0.06, '#f8fafc', 0.16, 0.44);
+            if (Math.random() < 0.55) this._spawnSparks(px, py + 0.03, pz, 2, '#ffffff', 1.15);
+            if (Math.random() < 0.30) this._spawnSmokePuff(px, py + 0.08, pz, '#f8fafc', 0.16, 0.44);
           } else if (isSulfur && p > 0.24 && p < 0.84) {
-            if (Math.random() < 0.35) this._spawnSmokePuff(px, py + 0.06, 0.04, '#e0f2fe', 0.17, 0.38);
+            if (Math.random() < 0.35) this._spawnSmokePuff(px, py + 0.06, pz, '#e0f2fe', 0.17, 0.38);
           } else if (isClBurn && p > 0.28 && p < 0.80) {
-            if (Math.random() < 0.50) this._spawnSparks(px, py, 0.04, 2, '#fb923c', 0.95);
-            if (Math.random() < 0.35) this._spawnSmokePuff(px, py + 0.06, 0.04, '#b45309', 0.19, 0.36);
+            if (Math.random() < 0.50) this._spawnSparks(px, py, pz, 2, '#fb923c', 0.95);
+            if (Math.random() < 0.35) this._spawnSmokePuff(px, py + 0.06, pz, '#b45309', 0.19, 0.36);
           }
         }
       }
