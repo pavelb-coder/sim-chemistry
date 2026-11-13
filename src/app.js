@@ -1,27 +1,36 @@
-import { CATEGORIES, REAGENTS, FLAME_COLORS, ACTIVITY_SERIES, PERIODIC_TABLE } from './reagents.js?v=2.2.1';
+import { CATEGORIES, REAGENTS, FLAME_COLORS, ACTIVITY_SERIES, PERIODIC_TABLE } from './reagents.js?v=2.3.0';
 import {
   VESSELS,
   BENCHES,
   GAS_INFO,
   createInitialLabState,
   cloneLabState,
+  mixLabVessels,
   analyzeChemistry,
   stepSimulation
-} from './chemistry.js?v=2.2.1';
-import { TASKS } from './tasks.js?v=2.2.1';
-import { SoundEngine } from './audio.js?v=2.2.1';
-import { MicroWorld } from './micro.js?v=2.2.1';
-import { Lab3DScene } from './lab3d.js?v=2.2.1';
-import { buildReportHTML } from './report.js?v=2.2.1';
-import { getReagentIconSVG, getCategoryIconSVG, getReagentHazardKind } from './icons.js?v=2.2.1';
+} from './chemistry.js?v=2.3.0';
+import { TASKS } from './tasks.js?v=2.3.0';
+import { SoundEngine } from './audio.js?v=2.3.0';
+import { MicroWorld } from './micro.js?v=2.3.0';
+import { Lab3DScene } from './lab3d.js?v=2.3.0';
+import { buildReportHTML } from './report.js?v=2.3.0';
+import { getReagentIconSVG, getCategoryIconSVG, getReagentHazardKind } from './icons.js?v=2.3.0';
 
 const STORAGE_DONE_KEY = 'chemlab3d.done.v1';
 const THEMES = ['classic', 'slate', 'warm'];
 const BENCH_ORDER = [3, 1, 2]; // пространственный порядок столов в зале слева направо (x = -5, 0, +5)
+const SLOT_SYMBOLS = ['①', '②', '③'];
 
 class ChemLabApp {
   constructor() {
-    this.labState = createInitialLabState('flask');
+    this.vesselSlots = [
+      createInitialLabState('flask'),
+      createInitialLabState('tube'),
+      createInitialLabState('beaker')
+    ];
+    this.activeSlot = 0;
+    this.labState = this.vesselSlots[0];
+    this.uvLampOn = false;
     this.undoStack = [];
     this.redoStack = [];
     this.actionLog = [];
@@ -93,6 +102,9 @@ class ChemLabApp {
       btnOpenAct: $('btnOpenAct'),
       btnOpenReport: $('btnOpenReport'),
 
+      slotGroup: $('slotGroup'),
+      btnQuickMix: $('btnQuickMix'),
+      quickMixLabel: $('quickMixLabel'),
       vesselGroup: $('vesselGroup'),
       btnUndo: $('btnUndo'),
       btnRedo: $('btnRedo'),
@@ -104,6 +116,8 @@ class ChemLabApp {
       btnHint: $('btnHint'),
 
       vesselCapBadge: $('vesselCapBadge'),
+      activeSlotBadge: $('activeSlotBadge'),
+      vesselMixControls: $('vesselMixControls'),
       vesselNameLabel: $('vesselNameLabel'),
       reagentCountLabel: $('reagentCountLabel'),
       vesselContentsList: $('vesselContentsList'),
@@ -137,6 +151,8 @@ class ChemLabApp {
       gaugeTitrantRow: $('gaugeTitrantRow'),
       gaugeTitrant: $('gaugeTitrant'),
       gaugeGas: $('gaugeGas'),
+      gaugeLumRow: $('gaugeLumRow'),
+      gaugeLum: $('gaugeLum'),
       gaugePh: $('gaugePh'),
       phMarker: $('phMarker'),
       safetyAlerts: $('safetyAlerts'),
@@ -159,6 +175,8 @@ class ChemLabApp {
       btnBurette: $('btnBurette'),
       btnBuretteDrop: $('btnBuretteDrop'),
       btnElectrolysis: $('btnElectrolysis'),
+      btnUvLamp: $('btnUvLamp'),
+      uvBtnText: $('uvBtnText'),
       btnFilter: $('btnFilter'),
       btnGasTube: $('btnGasTube'),
       tubeBtnText: $('tubeBtnText'),
@@ -202,10 +220,13 @@ class ChemLabApp {
       onObjectClick: (action) => {
         if (action && action.startsWith('bench:')) {
           this.switchBench(Number(action.split(':')[1]));
+        } else if (action && action.startsWith('slot:')) {
+          this.switchVesselSlot(Number(action.split(':')[1]));
         } else if (action === 'vessel') this.addReagent(this.selectedReagent);
         else if (action === 'burner') this.toggleBurner();
         else if (action === 'hotplate') this.toggleHotplate();
         else if (action === 'muffle') this.toggleMuffle();
+        else if (action === 'uv') this.toggleUvLamp();
         else if (action === 'stirrer') {
           if (this.labState.bench !== 2) this.switchBench(2, true);
           this.toggleStirrer();
@@ -251,6 +272,19 @@ class ChemLabApp {
 
     this.dom.btnPrepTask.addEventListener('click', () => this.runTaskPrep());
 
+    // Переключение рабочих слотов сосудов (① / ② / ③) и быстрое сливание растворов
+    this.dom.slotGroup?.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-slot]');
+      if (!btn) return;
+      this.switchVesselSlot(Number(btn.dataset.slot));
+    });
+    this.dom.btnQuickMix?.addEventListener('click', () => {
+      const srcIdx = Number(this.dom.btnQuickMix.dataset.sourceSlot ?? -1);
+      if (srcIdx >= 0 && srcIdx !== this.activeSlot) {
+        this.mixVesselSlots(srcIdx, this.activeSlot, 1.0);
+      }
+    });
+
     // Переключение посуды
     this.dom.vesselGroup.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-vessel]');
@@ -275,6 +309,14 @@ class ChemLabApp {
         this.dom.taskDropdown.classList.remove('open');
         document.querySelectorAll('.modal-backdrop.open').forEach((m) => m.classList.remove('open'));
         if (this.microOpen) this.toggleMicro(false);
+      } else if (
+        document.activeElement?.tagName !== 'INPUT' &&
+        document.activeElement?.tagName !== 'TEXTAREA' &&
+        !e.ctrlKey && !e.metaKey && !e.altKey &&
+        (e.key.toLowerCase() === 'u' || e.key.toLowerCase() === 'г')
+      ) {
+        e.preventDefault();
+        this.toggleUvLamp();
       } else if (
         document.activeElement?.tagName !== 'INPUT' &&
         document.activeElement?.tagName !== 'TEXTAREA' &&
@@ -351,6 +393,7 @@ class ChemLabApp {
     this.dom.btnBurette?.addEventListener('click', () => this.toggleBurette());
     this.dom.btnBuretteDrop?.addEventListener('click', () => this.runBuretteDrop());
     this.dom.btnElectrolysis?.addEventListener('click', () => this.toggleElectrolysis());
+    this.dom.btnUvLamp?.addEventListener('click', () => this.toggleUvLamp());
     this.dom.btnFilter?.addEventListener('click', () => this.runFiltration());
     this.dom.btnGasTube?.addEventListener('click', () => this.toggleTube());
     this.dom.btnSplint?.addEventListener('click', () => this.runSplintTest());
@@ -448,8 +491,26 @@ class ChemLabApp {
     } catch (e) {}
   }
 
+  _captureFullSnapshot() {
+    return {
+      slots: this.vesselSlots.map((s) => cloneLabState(s)),
+      activeSlot: this.activeSlot,
+      uvLampOn: this.uvLampOn
+    };
+  }
+
+  _restoreFullSnapshot(snap) {
+    if (!snap || !Array.isArray(snap.slots)) return;
+    this.vesselSlots = snap.slots.map((s) => cloneLabState(s));
+    this.activeSlot = Math.max(0, Math.min(this.vesselSlots.length - 1, Number(snap.activeSlot) || 0));
+    this.labState = this.vesselSlots[this.activeSlot];
+    this.uvLampOn = !!snap.uvLampOn;
+    this.scene3d?.setUvLamp(this.uvLampOn);
+    this.scene3d?.snapVesselToStation(this.labState);
+  }
+
   _pushUndoSnapshot() {
-    this.undoStack.push(cloneLabState(this.labState));
+    this.undoStack.push(this._captureFullSnapshot());
     if (this.undoStack.length > 30) this.undoStack.shift();
     this.redoStack = [];
   }
@@ -459,19 +520,86 @@ class ChemLabApp {
       this.showToast('Нет действий для отмены');
       return;
     }
-    this.redoStack.push(cloneLabState(this.labState));
-    this.labState = this.undoStack.pop();
+    this.redoStack.push(this._captureFullSnapshot());
+    this._restoreFullSnapshot(this.undoStack.pop());
     this.sound.play('clink');
-    this._log('↶ Действие полностью отменено (восстановлен снимок состояния)');
+    this._log('↶ Действие полностью отменено (восстановлены все сосуды)');
     this._syncAllUI();
   }
 
   redo() {
     if (!this.redoStack.length) return;
-    this.undoStack.push(cloneLabState(this.labState));
-    this.labState = this.redoStack.pop();
+    this.undoStack.push(this._captureFullSnapshot());
+    this._restoreFullSnapshot(this.redoStack.pop());
     this.sound.play('clink');
     this._log('↷ Отменённое действие возвращено');
+    this._syncAllUI();
+  }
+
+  switchVesselSlot(slotIdx, silent = false) {
+    if (slotIdx < 0 || slotIdx >= this.vesselSlots.length || slotIdx === this.activeSlot) return;
+    this._pushUndoSnapshot();
+    const curBench = this.labState.bench || 1;
+
+    // При перестановке текущего сосуда на вспомогательную стойку снимаем с него стационарные приборы
+    this.labState.tubeOn = false;
+    this.labState.buretteOn = false;
+    this.labState.electrolysisOn = false;
+    this.labState.muffleLvl = 0;
+
+    this.activeSlot = slotIdx;
+    this.labState = this.vesselSlots[slotIdx];
+    this.labState.bench = curBench;
+
+    this.sound.play('clink');
+    const vName = VESSELS[this.labState.vessel]?.name || 'Сосуд';
+    if (!silent) {
+      this.showToast(`🧪 Взят в работу Сосуд ${SLOT_SYMBOLS[slotIdx]}: ${vName}`);
+    }
+    this._log(`Переключён рабочий сосуд: ${SLOT_SYMBOLS[slotIdx]} (${vName})`);
+    this._syncAllUI();
+  }
+
+  mixVesselSlots(sourceIdx, targetIdx, fraction = 1.0) {
+    if (sourceIdx < 0 || targetIdx < 0 || sourceIdx === targetIdx) return;
+    const srcState = this.vesselSlots[sourceIdx];
+    const dstState = this.vesselSlots[targetIdx];
+    if (!srcState || !dstState) return;
+
+    const srcPre = analyzeChemistry(srcState);
+    const hasSrcAny = srcPre.wet || Object.keys(srcState.amt || {}).some((k) => (srcState.amt[k] || 0) > 0.01);
+    if (!hasSrcAny) {
+      this.showToast(`Сосуд ${SLOT_SYMBOLS[sourceIdx]} пуст — нечего переливать!`);
+      return;
+    }
+
+    this._pushUndoSnapshot();
+    const res = mixLabVessels(srcState, dstState, fraction);
+    if (!res.ok) {
+      this.undoStack.pop();
+      this.showToast(res.reason || 'Не удалось перелить раствор');
+      return;
+    }
+
+    const postDst = res.postTarget || analyzeChemistry(dstState);
+    const lum = srcPre.luminescence || postDst.luminescence;
+    const glowCol = (this.uvLampOn && lum?.uvIntensity > 0.05)
+      ? lum.uvColor
+      : (lum?.selfIntensity > 0.05 ? lum.selfColor : '');
+
+    if (targetIdx === this.activeSlot) {
+      this.scene3d.triggerVesselPour(srcState.vessel, srcPre.liquidColor || '#dff2fc', glowCol);
+    } else {
+      this.scene3d.triggerSplash(0.65);
+    }
+
+    this.sound.play('pour');
+    const srcSym = SLOT_SYMBOLS[sourceIdx];
+    const dstSym = SLOT_SYMBOLS[targetIdx];
+    const volNote = res.movedMl >= 0.5 ? ` (${Math.round(res.movedMl)} мл)` : '';
+    const ovfNote = res.frac < fraction - 0.03 ? ' · до краёв сосуда' : '';
+    this.showToast(`🫗 Перелито из Сосуда ${srcSym} → в Сосуд ${dstSym}${volNote}${ovfNote}!`);
+    this._log(`🫗 Смешивание сосудов: ${srcSym} → ${dstSym}${volNote}`);
     this._syncAllUI();
   }
 
@@ -548,11 +676,13 @@ class ChemLabApp {
     const keepVessel = this.labState.vessel;
     const keepBench = this.labState.bench || 1;
     const keepHeat = this.labState.heatLvl;
-    this.labState = createInitialLabState(keepVessel);
-    this.labState.bench = keepBench;
-    this.labState.heatLvl = keepHeat;
+    const fresh = createInitialLabState(keepVessel);
+    fresh.bench = keepBench;
+    fresh.heatLvl = keepHeat;
+    this.vesselSlots[this.activeSlot] = fresh;
+    this.labState = fresh;
     this.sound.play('pour');
-    this._log('Посуда вымыта дистиллированной водой');
+    this._log(`Посуда ${SLOT_SYMBOLS[this.activeSlot]} вымыта дистиллированной водой`);
     this._syncAllUI();
   }
 
@@ -823,12 +953,15 @@ class ChemLabApp {
   }
 
   toggleElectrolysis() {
-    this._pushUndoSnapshot();
-    if (!this.labState.electrolysisOn && this.labState.bench !== 3) {
-      this.labState.bench = 3;
-      this.labState.tubeOn = false;
-      this.sound.play('transfer');
+    const preAnalysis = analyzeChemistry(this.labState);
+    const hasContents = preAnalysis.wet || Object.keys(this.labState.amt || {}).some((k) => (this.labState.amt[k] || 0) > 0.01);
+
+    if (!this.labState.electrolysisOn && !hasContents) {
+      this.showToast('⚡ Сосуд на текущем столе пуст! Сначала налейте раствор электролита (например CuSO₄ или KI), чтобы опустить электроды.');
+      return;
     }
+
+    this._pushUndoSnapshot();
     this.labState.muffleLvl = 0;
     this.labState.electrolysisOn = !this.labState.electrolysisOn;
     if (this.labState.electrolysisOn) {
@@ -836,18 +969,44 @@ class ChemLabApp {
     }
     this.sound.play('switch');
     const analysis = analyzeChemistry(this.labState);
+    const benchName = BENCHES[this.labState.bench || 1]?.short || 'Стол';
     if (this.labState.electrolysisOn) {
       if (!analysis.wet) {
-        this.showToast('⚡ Источник постоянного тока 12 В включён, но сосуд сухой (I = 0,00 А). Налейте раствор для проверки электропроводности или электролиза!');
+        this.showToast(`⚡ Источник тока 12 В подключён (${benchName}), но вещество сухое (I = 0,00 А). Добавьте воду для диссоциации ионов!`);
       } else if (!analysis.isElectrolyte) {
-        this.showToast('⚡ Источник 12 В включён: ток НЕ идёт (I = 0,00 А) — в сосуде неэлектролит (свободные ионы отсутствуют)!');
+        this.showToast(`⚡ Источник 12 В подключён (${benchName}): ток НЕ идёт (I = 0,00 А) — в сосуде неэлектролит!`);
       } else {
-        this.showToast(`⚡ Запущен электролиз на графитовых электродах (ток I = ${analysis.currentAmp.toFixed(2).replace('.', ',')} А)! Наблюдайте процессы у катода (−) и анода (+)`);
+        this.showToast(`⚡ Электролиз запущен на ${benchName} (ток I = ${analysis.currentAmp.toFixed(2).replace('.', ',')} А)! Наблюдайте катод (−) и анод (+)`);
       }
     } else {
       this.showToast('Источник постоянного тока выключен, электроды подняты');
     }
-    this._log(this.labState.electrolysisOn ? 'Включён электролизёр DC 12 В (графитовые электроды)' : 'Электролизёр выключен');
+    this._log(this.labState.electrolysisOn ? `Включён электролизёр DC 12 В (${benchName})` : 'Электролизёр выключен');
+    this._syncAllUI();
+  }
+
+  toggleUvLamp(forceVal) {
+    const next = typeof forceVal === 'boolean' ? forceVal : !this.uvLampOn;
+    this.uvLampOn = next;
+    this.scene3d.setUvLamp(next);
+    this.sound.play('switch');
+    const analysis = analyzeChemistry(this.labState);
+    const lum = analysis.luminescence;
+    if (next) {
+      if (lum && lum.uvIntensity > 0.05) {
+        const wTxt = lum.wavelengthNm ? ` (λ = ${lum.wavelengthNm} нм${lum.qdDiameterNm ? `, d ≈ ${lum.qdDiameterNm.toFixed(1).replace('.', ',')} нм` : ''})` : '';
+        this.showToast(`🔦 УФ-лампа 365 нм включена: яркая фотолюминесценция — ${lum.label}${wTxt}!`);
+      } else {
+        this.showToast('🔦 УФ-лампа Вуда (365 нм) включена! Синтезируйте квантовые точки CdSe/CdS/C-Dots, кристаллофосфор ZnS:Cu или добавьте флуоресцеин.');
+      }
+    } else {
+      if ((this.labState.afterglow || 0) > 0.12) {
+        this.showToast('🔦 УФ-лампа погашена — наблюдайте изумрудное фосфоресцентное послесвечение люминофора в темноте!');
+      } else {
+        this.showToast('УФ-лампа 365 нм выключена');
+      }
+    }
+    this._log(next ? 'Включена УФ-лампа Вуда (λ = 365 нм)' : 'УФ-лампа 365 нм выключена');
     this._syncAllUI();
   }
 
@@ -1128,22 +1287,53 @@ class ChemLabApp {
     if (!task?.prep) return;
     this._pushUndoSnapshot();
     const P = task.prep;
-    this.labState = createInitialLabState(P.vessel || 'flask');
-    this.labState.bench = P.bench || 1;
-    if (P.tubeOn) this.labState.tubeOn = true;
-    if (P.heatLvl) this.labState.heatLvl = P.heatLvl;
-    if (P.hotplateLvl) this.labState.hotplateLvl = P.hotplateLvl;
-    if (P.muffleLvl) this.labState.muffleLvl = P.muffleLvl;
-    if (P.iceBathOn) this.labState.iceBathOn = true;
-    if (P.stirrerOn) this.labState.stirrerOn = true;
-    if (P.buretteOn) this.labState.buretteOn = true;
-    if (P.electrolysisOn) this.labState.electrolysisOn = true;
+
+    const s0 = createInitialLabState(P.vessel || 'flask');
+    s0.bench = P.bench || 1;
+    if (P.tubeOn) s0.tubeOn = true;
+    if (P.heatLvl) s0.heatLvl = P.heatLvl;
+    if (P.hotplateLvl) s0.hotplateLvl = P.hotplateLvl;
+    if (P.muffleLvl) s0.muffleLvl = P.muffleLvl;
+    if (P.iceBathOn) s0.iceBathOn = true;
+    if (P.stirrerOn) s0.stirrerOn = true;
+    if (P.buretteOn) s0.buretteOn = true;
+    if (P.electrolysisOn) s0.electrolysisOn = true;
     for (const [rid, qty] of P.add || []) {
-      this.labState.amt[rid] = (this.labState.amt[rid] || 0) + qty;
+      s0.amt[rid] = (s0.amt[rid] || 0) + qty;
       const r = REAGENTS[rid];
       const unit = r?.state === 's' ? 'порц.' : (r?.state === 'd' ? 'кап.' : 'мл');
-      this.labState.addedOrder.push({ id: rid, qty, unit });
+      s0.addedOrder.push({ id: rid, qty, unit });
     }
+
+    const s1 = createInitialLabState(P.slot2?.vessel || 'tube');
+    s1.bench = P.bench || 1;
+    if (P.slot2?.add) {
+      for (const [rid, qty] of P.slot2.add) {
+        s1.amt[rid] = (s1.amt[rid] || 0) + qty;
+        const r = REAGENTS[rid];
+        const unit = r?.state === 's' ? 'порц.' : (r?.state === 'd' ? 'кап.' : 'мл');
+        s1.addedOrder.push({ id: rid, qty, unit });
+      }
+    }
+
+    const s2 = createInitialLabState(P.slot3?.vessel || 'beaker');
+    s2.bench = P.bench || 1;
+    if (P.slot3?.add) {
+      for (const [rid, qty] of P.slot3.add) {
+        s2.amt[rid] = (s2.amt[rid] || 0) + qty;
+        const r = REAGENTS[rid];
+        const unit = r?.state === 's' ? 'порц.' : (r?.state === 'd' ? 'кап.' : 'мл');
+        s2.addedOrder.push({ id: rid, qty, unit });
+      }
+    }
+
+    this.vesselSlots = [s0, s1, s2];
+    this.activeSlot = 0;
+    this.labState = this.vesselSlots[0];
+    this.uvLampOn = !!P.uvLampOn;
+    this.scene3d.setUvLamp(this.uvLampOn);
+    this.scene3d.snapVesselToStation(this.labState);
+
     if (P.sel && REAGENTS[P.sel]) {
       this.selectReagent(P.sel);
     }
@@ -1183,7 +1373,27 @@ class ChemLabApp {
   }
 
   _onSimTick() {
-    const res = stepSimulation(this.labState, 0.25, this.speedX);
+    // Шагаем физико-химическую кинетику во всех 3 рабочих сосудах (на стойке сосуды остывают и продолжают светиться!)
+    let activeRes = null;
+    for (let i = 0; i < this.vesselSlots.length; i++) {
+      const st = this.vesselSlots[i];
+      if (i !== this.activeSlot) {
+        // Вспомогательные сосуды стоят на стойке без горелки/муфеля/плитки
+        const savedHeat = st.heatLvl;
+        const savedHp = st.hotplateLvl;
+        const savedMf = st.muffleLvl;
+        st.heatLvl = 0;
+        st.hotplateLvl = 0;
+        st.muffleLvl = 0;
+        stepSimulation(st, 0.25, this.speedX, this.uvLampOn);
+        st.heatLvl = savedHeat;
+        st.hotplateLvl = savedHp;
+        st.muffleLvl = savedMf;
+      } else {
+        activeRes = stepSimulation(st, 0.25, this.speedX, this.uvLampOn);
+      }
+    }
+    const res = activeRes || stepSimulation(this.labState, 0.25, this.speedX, this.uvLampOn);
     this.lastSimInfo = res;
     if (res.events && res.events.length > 0) {
       res.events.forEach((ev) => {
@@ -1204,6 +1414,98 @@ class ChemLabApp {
     this.sound.updateLoops({ fizz: fizzLvl, flame: flameLvl, furnace: furnaceLvl });
 
     this._syncDynamicUI(res.analysis);
+  }
+
+  _renderMultiVesselUI(slotsInfo) {
+    const curSym = SLOT_SYMBOLS[this.activeSlot];
+    if (this.dom.activeSlotBadge) {
+      this.dom.activeSlotBadge.textContent = `Активен ${curSym}`;
+    }
+
+    // Обновляем кнопки ① ② ③ в верхней панели и быструю кнопку «Влить»
+    let quickSourceIdx = -1;
+    this.dom.slotGroup?.querySelectorAll('[data-slot]').forEach((btn) => {
+      const idx = Number(btn.dataset.slot);
+      const info = slotsInfo[idx];
+      const hasAny = info.analysis.wet || Object.keys(info.state.amt || {}).some((k) => (info.state.amt[k] || 0) > 0.01);
+      btn.classList.toggle('active', idx === this.activeSlot);
+      btn.classList.toggle('has-liquid', hasAny);
+      const dotCol = (this.uvLampOn && info.analysis.luminescence?.uvIntensity > 0.05)
+        ? info.analysis.luminescence.uvColor
+        : (info.analysis.luminescence?.selfIntensity > 0.05 ? info.analysis.luminescence.selfColor : (info.analysis.liquidColor || '#0ea5e9'));
+      btn.style.setProperty('--slot-dot', dotCol);
+      if (idx !== this.activeSlot && hasAny && quickSourceIdx === -1) {
+        quickSourceIdx = idx;
+      }
+    });
+
+    if (this.dom.btnQuickMix && this.dom.quickMixLabel) {
+      if (quickSourceIdx !== -1) {
+        this.dom.btnQuickMix.style.display = 'inline-flex';
+        this.dom.btnQuickMix.dataset.sourceSlot = String(quickSourceIdx);
+        this.dom.quickMixLabel.textContent = `Влить ${SLOT_SYMBOLS[quickSourceIdx]} → ${curSym}`;
+      } else {
+        this.dom.btnQuickMix.style.display = 'none';
+      }
+    }
+
+    // Отрисовываем карточку всех 3 сосудов с кнопками «Влить всё» и «Отлить ½»
+    if (this.dom.vesselMixControls) {
+      const curInfo = slotsInfo[this.activeSlot];
+      const curHasAny = curInfo.analysis.wet || Object.keys(curInfo.state.amt || {}).some((k) => (curInfo.state.amt[k] || 0) > 0.01);
+
+      this.dom.vesselMixControls.innerHTML = slotsInfo.map((info, idx) => {
+        const sym = SLOT_SYMBOLS[idx];
+        const vShort = VESSELS[info.state.vessel]?.name?.split(' ')[0] || 'Сосуд';
+        const hasAny = info.analysis.wet || Object.keys(info.state.amt || {}).some((k) => (info.state.amt[k] || 0) > 0.01);
+        const desc = info.analysis.wet
+          ? `${Math.round(info.analysis.volume)} мл`
+          : (hasAny ? 'тв. нав.' : 'пусто');
+        const swCol = (this.uvLampOn && info.analysis.luminescence?.uvIntensity > 0.05)
+          ? info.analysis.luminescence.uvColor
+          : (info.analysis.luminescence?.selfIntensity > 0.05
+            ? info.analysis.luminescence.selfColor
+            : (hasAny ? (info.analysis.liquidColor || '#bae6fd') : '#f1f5f9'));
+
+        let actionsHtml = '';
+        if (idx === this.activeSlot) {
+          actionsHtml = `<span style="font-size:11px;color:var(--brand);font-weight:700">на столе</span>`;
+        } else {
+          if (hasAny) {
+            actionsHtml += `<button type="button" class="mix-mini-btn primary" data-mix-src="${idx}" data-mix-dst="${this.activeSlot}" data-mix-frac="1" title="Перелить всё содержимое сосуда ${sym} в активный сосуд ${curSym}">Влить → ${curSym}</button>`;
+          }
+          if (curHasAny) {
+            actionsHtml += `<button type="button" class="mix-mini-btn" data-mix-src="${this.activeSlot}" data-mix-dst="${idx}" data-mix-frac="0.5" title="Отлить половину содержимого активного сосуда ${curSym} в сосуд ${sym}">½ в ${sym}</button>`;
+          }
+          if (!hasAny && !curHasAny) {
+            actionsHtml += `<button type="button" class="mix-mini-btn" data-pick-slot="${idx}">Взять</button>`;
+          }
+        }
+
+        return `
+          <div class="mix-slot-row ${idx === this.activeSlot ? 'is-active' : ''}">
+            <div class="mix-slot-info" data-pick-slot="${idx}" title="Нажмите, чтобы сделать Сосуд ${sym} активным">
+              <span class="mix-slot-swatch" style="background:${swCol}"></span>
+              <span class="mix-slot-title">${sym} ${vShort} · <span style="font-weight:500;color:var(--muted)">${desc}</span></span>
+            </div>
+            <div class="mix-slot-actions">${actionsHtml}</div>
+          </div>`;
+      }).join('');
+
+      this.dom.vesselMixControls.querySelectorAll('[data-pick-slot]').forEach((el) => {
+        el.addEventListener('click', () => this.switchVesselSlot(Number(el.dataset.pickSlot)));
+      });
+      this.dom.vesselMixControls.querySelectorAll('[data-mix-src]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.mixVesselSlots(
+            Number(btn.dataset.mixSrc),
+            Number(btn.dataset.mixDst),
+            Number(btn.dataset.mixFrac) || 1.0
+          );
+        });
+      });
+    }
   }
 
   _currentTask() {
@@ -1496,7 +1798,7 @@ class ChemLabApp {
         this.dom.gaugeCurrent.textContent = this.labState.electrolysisOn ? '0,00 А (сухо)' : '—';
       } else if (this.labState.electrolysisOn) {
         this.dom.gaugeCurrent.textContent = analysis.isElectrolyte
-          ? `${analysis.currentAmp.toFixed(2).replace('.', ',')} А (ток идёт)`
+          ? `${analysis.currentAmp.toFixed(2).replace('.', ',')} А`
           : '0,00 А (неэлектр.)';
       } else {
         this.dom.gaugeCurrent.textContent = analysis.isElectrolyte ? 'Электролит' : 'Неэлектролит';
@@ -1510,6 +1812,25 @@ class ChemLabApp {
     }
 
     this.dom.gaugeGas.textContent = totalGas > 0 ? `${totalGas} мл (${gasNames})` : '0 мл';
+
+    // Показание люминесценции (УФ-квантовые точки, люминофоры, хемилюминесценция люминола)
+    const lum = analysis.luminescence;
+    const uvActive = this.uvLampOn && lum && lum.uvIntensity > 0.04;
+    const selfActive = lum && lum.selfIntensity > 0.04;
+    if (this.dom.gaugeLumRow && this.dom.gaugeLum) {
+      if (uvActive || selfActive) {
+        this.dom.gaugeLumRow.style.display = 'flex';
+        const col = uvActive ? lum.uvColor : lum.selfColor;
+        const wStr = lum.wavelengthNm ? `${lum.wavelengthNm} нм` : '';
+        const dStr = lum.qdDiameterNm ? ` (${lum.qdDiameterNm.toFixed(1).replace('.', ',')} нм)` : '';
+        const modeStr = !uvActive && selfActive
+          ? ((this.labState.chemilum || 0) > 0.05 ? ' · хеми' : ' · посл.')
+          : '';
+        this.dom.gaugeLum.innerHTML = `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${col};box-shadow:0 0 8px ${col};margin-right:5px;vertical-align:middle"></span>${wStr}${dStr}${modeStr}`;
+      } else {
+        this.dom.gaugeLumRow.style.display = 'none';
+      }
+    }
 
     if (analysis.pH !== null) {
       const envName = analysis.pH < 6.4 ? 'Кислая' : (analysis.pH > 7.6 ? 'Щелочная' : 'Нейтральная');
@@ -1560,6 +1881,10 @@ class ChemLabApp {
       this.dom.btnBuretteDrop.style.display = this.labState.buretteOn ? 'inline-flex' : 'none';
     }
     this.dom.btnElectrolysis?.classList.toggle('elec-on', !!this.labState.electrolysisOn);
+    this.dom.btnUvLamp?.classList.toggle('uv-on', !!this.uvLampOn);
+    if (this.dom.uvBtnText) {
+      this.dom.uvBtnText.textContent = this.uvLampOn ? 'УФ 365 ✓' : 'УФ 365 нм';
+    }
     this.dom.tubeBtnText.textContent = this.labState.tubeOn ? 'Трубка ✓' : 'Трубка';
     this.dom.btnGasTube.classList.toggle('active', this.labState.tubeOn);
 
@@ -1576,8 +1901,17 @@ class ChemLabApp {
       </div>
     `).join('');
 
-    // Синхронизация 3D и Микромира
-    this.scene3d.syncState(this.labState, analysis, this.lastSimInfo);
+    // Синхронизация всех 3 слотов сосудов, 3D-сцены и Микромира
+    const slotsInfo = this.vesselSlots.map((st, idx) => ({
+      state: st,
+      analysis: idx === this.activeSlot ? analysis : analyzeChemistry(st)
+    }));
+    this._renderMultiVesselUI(slotsInfo);
+    this.scene3d.syncState(this.labState, analysis, this.lastSimInfo, {
+      slots: slotsInfo,
+      activeSlot: this.activeSlot,
+      uvLampOn: this.uvLampOn
+    });
     if (this.microOpen) this._updateMicroCard(analysis);
     this._updateGpuBadge();
   }
@@ -1657,10 +1991,13 @@ class ChemLabApp {
   exportChemlabJson() {
     const payload = {
       app: 'chemlab3d',
-      version: 1,
+      version: 2,
       savedAt: new Date().toISOString(),
       taskId: this.currentTaskId,
       eqParts: this.eqParts,
+      activeSlot: this.activeSlot,
+      uvLampOn: this.uvLampOn,
+      vesselSlots: this.vesselSlots,
       labState: this.labState
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -1690,20 +2027,44 @@ class ChemLabApp {
           return;
         }
         this._pushUndoSnapshot();
-        const clean = createInitialLabState(VESSELS[data.labState.vessel] ? data.labState.vessel : 'flask');
-        for (const [id, q] of Object.entries(data.labState.amt || {})) {
-          if (REAGENTS[id] && typeof q === 'number' && q > 0 && q <= 200) {
-            clean.amt[id] = q;
+        const sanitizeSlot = (raw, fallbackKind = 'flask') => {
+          const clean = createInitialLabState(VESSELS[raw?.vessel] ? raw.vessel : fallbackKind);
+          for (const [id, q] of Object.entries(raw?.amt || {})) {
+            if (REAGENTS[id] && typeof q === 'number' && q > 0 && q <= 200) {
+              clean.amt[id] = q;
+            }
           }
+          clean.bench = [1, 2, 3].includes(raw?.bench) ? raw.bench : 1;
+          clean.temp = Math.max(2, Math.min(1000, Number(raw?.temp) || 22));
+          clean.heatLvl = [0, 1, 2, 3].includes(raw?.heatLvl) ? raw.heatLvl : 0;
+          clean.hotplateLvl = [0, 1, 2, 3].includes(raw?.hotplateLvl) ? raw.hotplateLvl : 0;
+          clean.muffleLvl = [0, 1, 2].includes(raw?.muffleLvl) ? raw.muffleLvl : 0;
+          clean.tubeOn = !!raw?.tubeOn;
+          clean.prog = typeof raw?.prog === 'object' ? raw.prog : {};
+          clean.collectedGas = typeof raw?.collectedGas === 'object' ? raw.collectedGas : {};
+          clean.coatings = Object.assign(clean.coatings, raw?.coatings || {});
+          clean.seen = Object.assign(clean.seen, raw?.seen || {});
+          return clean;
+        };
+
+        if (Array.isArray(data.vesselSlots) && data.vesselSlots.length === 3) {
+          this.vesselSlots = [
+            sanitizeSlot(data.vesselSlots[0], 'flask'),
+            sanitizeSlot(data.vesselSlots[1], 'tube'),
+            sanitizeSlot(data.vesselSlots[2], 'beaker')
+          ];
+          this.activeSlot = [0, 1, 2].includes(data.activeSlot) ? data.activeSlot : 0;
+        } else {
+          this.vesselSlots = [
+            sanitizeSlot(data.labState, 'flask'),
+            createInitialLabState('tube'),
+            createInitialLabState('beaker')
+          ];
+          this.activeSlot = 0;
         }
-        clean.temp = Math.max(15, Math.min(380, Number(data.labState.temp) || 22));
-        clean.heatLvl = [0, 1, 2, 3].includes(data.labState.heatLvl) ? data.labState.heatLvl : 0;
-        clean.tubeOn = !!data.labState.tubeOn;
-        clean.prog = typeof data.labState.prog === 'object' ? data.labState.prog : {};
-        clean.collectedGas = typeof data.labState.collectedGas === 'object' ? data.labState.collectedGas : {};
-        clean.coatings = Object.assign(clean.coatings, data.labState.coatings || {});
-        clean.seen = Object.assign(clean.seen, data.labState.seen || {});
-        this.labState = clean;
+        this.labState = this.vesselSlots[this.activeSlot];
+        this.uvLampOn = !!data.uvLampOn;
+        this.scene3d.setUvLamp(this.uvLampOn);
 
         if (data.taskId && TASKS.some((t) => t.id === data.taskId)) {
           this.currentTaskId = data.taskId;

@@ -1,4 +1,4 @@
-import { REAGENTS } from './reagents.js?v=2.2.1';
+import { REAGENTS } from './reagents.js?v=2.3.0';
 
 const ION_LABELS = {
   Li: ['Li⁺', '#fb7185'],
@@ -18,6 +18,7 @@ const ION_LABELS = {
   Cu: ['Cu²⁺', '#38bdf8'],
   Ag: ['Ag⁺',  '#e2e8f0'],
   Pb: ['Pb²⁺', '#9ca3af'],
+  Cd: ['Cd²⁺', '#93c5fd'],
   NH4:['NH₄⁺', '#2dd4bf'],
   Mn: ['Mn²⁺', '#fbcfe8'],
   Cl: ['Cl⁻',  '#4ade80'],
@@ -31,6 +32,7 @@ const ION_LABELS = {
   HCO3:['HCO₃⁻','#5eead4'],
   SO3:['SO₃²⁻','#fcd34d'],
   S2O3:['S₂O₃²⁻','#fbbf24'],
+  SeSO3:['SeSO₃²⁻','#facc15'],
   S:  ['S²⁻',  '#fde047'],
   SiO3:['SiO₃²⁻','#cbd5e1'],
   SCN:['SCN⁻', '#f87171'],
@@ -83,6 +85,26 @@ export function describeMicroState(state, analysis) {
         lattice: { label: 'NH₄Cl', color: '#f1f5f9' }
       };
     }
+    if ((state.prog?.phosphor_znscu || 0) >= 0.12) {
+      return {
+        title: 'Кристаллофосфор сульфида цинка ZnS:Cu',
+        equation: 'ZnS + Cu²⁺(активатор) →(600–950 °C) ZnS:Cu  [hν = 524 нм]',
+        caption: 'При прокаливании в муфельной печи примесные ионы Cu⁺ встраиваются в решётку сфалерита/вюрцита ZnS, создавая центры изумрудной фотолюминесценции и длительного послесвечения!',
+        mode: 'dry_solid',
+        species: [{ label: 'hν 524 нм', color: '#00ff88', count: 8, gas: true }],
+        lattice: { label: 'ZnS:Cu', color: '#86efac' }
+      };
+    }
+    if ((state.prog?.phosphor_boric || 0) >= 0.12) {
+      return {
+        title: 'Борный органолюминофор B₂O₃·Люм',
+        equation: '2H₃BO₃ →(180 °C) B₂O₃(стекло) + 3H₂O↑',
+        caption: 'Молекулы органического люминофора жёстко фиксируются в стеклообразной матрице борного ангидрида B₂O₃, приобретая яркую фосфоресценцию и послесвечение.',
+        mode: 'dry_solid',
+        species: [{ label: 'hν 495 нм', color: '#4ade80', count: 7, gas: true }],
+        lattice: { label: 'B₂O₃·Люм', color: '#bef264' }
+      };
+    }
     const drySolid = Object.keys(amt).find((k) => amt[k] > 0 && REAGENTS[k]?.state === 's');
     if (drySolid) {
       const r = REAGENTS[drySolid];
@@ -117,6 +139,60 @@ export function describeMicroState(state, analysis) {
   }
 
   // Жидкая фаза
+  if ((state.chemilum || 0) > 0.05) {
+    return {
+      title: 'Хемилюминесценция люминола (425 нм)',
+      equation: 'Люминол + 2H₂O₂ + 2OH⁻ →[Kat] 3-АФ²⁻* → 3-АФ²⁻ + N₂↑ + hν (425 нм)',
+      caption: 'Окисление люминола пероксидом водорода рождает электронно-возбуждённый 3-аминофталат-дианион, релаксирующий с испусканием холодного синего фотона hν без нагрева!',
+      mode: 'ions',
+      species: [
+        { label: '3-АФ²⁻*', color: '#00b4ff', count: 7 },
+        { label: 'hν 425нм', color: '#38bdf8', count: 9, gas: true },
+        { label: 'N₂', color: '#93c5fd', count: 4, gas: true }
+      ]
+    };
+  }
+  if ((state.prog?.qd_cdse || 0) >= 0.08) {
+    const lum = analysis.luminescence;
+    const dStr = lum?.qdDiameterNm ? `${lum.qdDiameterNm.toFixed(1)} нм` : '2,5 нм';
+    const wStr = lum?.wavelengthNm ? `${lum.wavelengthNm} нм` : '525 нм';
+    const gCol = lum?.uvColor || '#22ff66';
+    return {
+      title: `Коллоидные квантовые точки CdSe (d ≈ ${dStr})`,
+      equation: `Cd²⁺ + SeSO₃²⁻ + 2OH⁻ →(MPA, t°) CdSe(КТ, ${dStr}) + SO₄²⁻  [λ = ${wStr}]`,
+      caption: 'Квантово-размерный эффект: тиогликолевая кислота (MPA) покрывает поверхность нанокристалла CdSe, не давая ему выпасть в осадок. С ростом диаметра от 2 до 5,6 нм ширина запрещённой зоны сужается (зелёный → жёлтый → рубиново-красный)!',
+      mode: 'ions',
+      species: [
+        { label: `CdSe ${dStr}`, color: gCol, count: 9 },
+        { label: 'MPA⁻', color: '#a5f3fc', count: 7 },
+        { label: `hν ${wStr}`, color: gCol, count: 6, gas: true }
+      ]
+    };
+  }
+  if ((state.prog?.qd_cds || 0) >= 0.12) {
+    return {
+      title: 'Коллоидные квантовые точки сульфида кадмия CdS',
+      equation: 'Cd²⁺ + S²⁻ →(MPA) CdS(КТ, d ≈ 2,8 нм)  [λ = 468 нм]',
+      caption: 'Стабилизатор MPA обрывает рост зародышей CdS на нанометровом масштабе (2,8 нм), превращая обычный жёлтый осадок в прозрачный золь с голубой УФ-люминесценцией!',
+      mode: 'ions',
+      species: [
+        { label: 'CdS 2,8нм', color: '#00d4ff', count: 9 },
+        { label: 'MPA⁻', color: '#a5f3fc', count: 7 }
+      ]
+    };
+  }
+  if ((state.prog?.qd_carbon || 0) >= 0.12) {
+    return {
+      title: 'Углеродные квантовые точки (C-Dots)',
+      equation: 'C₆H₁₂O₆ →(карбонизация, t° > 90 °C) C-Dots (d ≈ 3,2 нм) + nH₂O',
+      caption: 'Частичная термическая дегидратация и ароматизация углевода формирует sp²-углеродные наноядра диаметром ~3 нм с яркой бирюзовой УФ-фотолюминесценцией (488 нм).',
+      mode: 'ions',
+      species: [
+        { label: 'C-Dot', color: '#00f0ff', count: 10 },
+        { label: 'hν 488нм', color: '#38bdf8', count: 6, gas: true }
+      ]
+    };
+  }
   if ((amt.cac2 || 0) > 0 && (state.prog.cac2 || 0) < 0.99) {
     return {
       title: 'Гидролиз карбида кальция (получение ацетилена)',

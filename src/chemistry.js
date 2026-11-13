@@ -1,4 +1,4 @@
-import { REAGENTS, FLAME_COLORS } from './reagents.js?v=2.2.1';
+import { REAGENTS, FLAME_COLORS } from './reagents.js?v=2.3.0';
 
 export const VESSELS = {
   flask: {
@@ -18,7 +18,7 @@ export const VESSELS = {
     cap: 150,
     glassHeatCap: 16,
     allowTube: true,
-    evapFactor: 0.85,
+    evapFactor: 0.42,
     dryMaxBoost: 25
   },
   tube: {
@@ -108,6 +108,8 @@ export function createInitialLabState(vessel = 'flask') {
     tubeOn: false,
     collectedGas: {},
     evapMl: 0,
+    afterglow: 0,
+    chemilum: 0,
     headspace: { gas: '', amount: 0 },
     coatings: {
       silverMirror: 0,
@@ -149,7 +151,12 @@ export function createInitialLabState(vessel = 'flask') {
       calcinedCaCO3: false,
       slakedLime: false,
       benchMoved: false,
-      hotplateUsed: false
+      hotplateUsed: false,
+      qdSynthesized: false,
+      qdRedShift: false,
+      phosphorSynthesized: false,
+      chemiluminescence: false,
+      mixedVessels: false
     },
     simTime: 0
   };
@@ -157,6 +164,170 @@ export function createInitialLabState(vessel = 'flask') {
 
 export function cloneLabState(state) {
   return JSON.parse(JSON.stringify(state));
+}
+
+/**
+ * Спектральные характеристики коллоидных квантовых точек CdSe в зависимости от степени роста нанокристалла (0..1)
+ * Квантово-размерный эффект: с ростом диаметра от 2,0 нм до 5,6 нм ширина запрещённой зоны сужается,
+ * и пик фотолюминесценции плавно смещается от бирюзово-зелёного (495 нм) к рубиново-красному (648 нм)!
+ */
+export function computeCdSeSpectrum(growth) {
+  const g = Math.max(0, Math.min(1, growth || 0));
+  const diameterNm = Math.round((2.0 + g * 3.6) * 10) / 10;
+  const wavelengthNm = Math.round(494 + g * 154);
+
+  const stops = [
+    { p: 0.00, em: '#00f5d4', sol: '#d9f99d', name: 'бирюзово-голубая' },
+    { p: 0.25, em: '#22ff66', sol: '#fde047', name: 'изумрудно-зелёная' },
+    { p: 0.52, em: '#ffee32', sol: '#facc15', name: 'лимонно-жёлтая' },
+    { p: 0.76, em: '#ff7b00', sol: '#fb923c', name: 'ярко-оранжевая' },
+    { p: 1.00, em: '#ff1e56', sol: '#dc2626', name: 'рубиново-красная' }
+  ];
+  let s0 = stops[0];
+  let s1 = stops[stops.length - 1];
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (g >= stops[i].p && g <= stops[i + 1].p) {
+      s0 = stops[i];
+      s1 = stops[i + 1];
+      break;
+    }
+  }
+  const t = s1.p > s0.p ? (g - s0.p) / (s1.p - s0.p) : 0;
+  const c0 = hexToRgb(s0.em);
+  const c1 = hexToRgb(s1.em);
+  const emColor = rgbToHex([
+    c0[0] + (c1[0] - c0[0]) * t,
+    c0[1] + (c1[1] - c0[1]) * t,
+    c0[2] + (c1[2] - c0[2]) * t
+  ]);
+  const a0 = hexToRgb(s0.sol);
+  const a1 = hexToRgb(s1.sol);
+  const solColor = rgbToHex([
+    a0[0] + (a1[0] - a0[0]) * t,
+    a0[1] + (a1[1] - a0[1]) * t,
+    a0[2] + (a1[2] - a0[2]) * t
+  ]);
+  const colorName = t < 0.5 ? s0.name : s1.name;
+  return { diameterNm, wavelengthNm, emColor, solColor, colorName };
+}
+
+/**
+ * Переливание / смешивание содержимого одного сосуда (sourceState) в другой (targetState)
+ * с сохранением материального баланса, энтальпии (теплоты смешения и нейтрализации) и наночастиц/люминофоров.
+ */
+export function mixLabVessels(sourceState, targetState, fraction = 1.0) {
+  const srcA = analyzeChemistry(sourceState);
+  const dstA = analyzeChemistry(targetState);
+  const dstCap = VESSELS[targetState.vessel]?.cap || 100;
+
+  const srcHasSolids = Object.entries(sourceState.amt).some(([id, q]) => q > 0.01 && REAGENTS[id]?.state === 's');
+  const srcHasDrops = Object.entries(sourceState.amt).some(([id, q]) => q > 0.01 && REAGENTS[id]?.state === 'd');
+  if (!srcA.wet && !srcHasSolids && !srcHasDrops) {
+    return { ok: false, reason: 'Исходный сосуд пуст — переливать нечего' };
+  }
+
+  let frac = Math.max(0.05, Math.min(1.0, fraction));
+  if (srcA.wet && srcA.volume > 0) {
+    const freeMl = dstCap - dstA.volume;
+    if (freeMl <= 0.4) {
+      return { ok: false, reason: `Целевой сосуд «${VESSELS[targetState.vessel]?.name}» уже заполнен (${dstCap} мл)` };
+    }
+    const wantMl = srcA.volume * frac;
+    if (wantMl > freeMl) {
+      frac = freeMl / srcA.volume;
+    }
+  }
+
+  const movedMl = Math.round(srcA.volume * frac * 10) / 10;
+
+  // Тепловой баланс смешения двух сосудов
+  const cSrc = Math.max(1.5, movedMl + (srcHasSolids ? 2.5 * frac : 0));
+  const cDst = Math.max(4.0, dstA.volume + (VESSELS[targetState.vessel]?.glassHeatCap || 10));
+  let mixedTemp = (targetState.temp * cDst + sourceState.temp * cSrc) / (cDst + cSrc);
+
+  // Экзотермический эффект нейтрализации или разбавления конц. кислоты при сливании двух сосудов
+  if ((srcA.netEq > 0.08 && dstA.netEq < -0.08) || (srcA.netEq < -0.08 && dstA.netEq > 0.08)) {
+    mixedTemp = Math.min(98, mixedTemp + 8.5);
+  }
+  if ((srcA.concH2SO4 && dstA.wet && !dstA.concH2SO4) || (dstA.concH2SO4 && srcA.wet && !srcA.concH2SO4)) {
+    mixedTemp = Math.min(99, mixedTemp + 16.0);
+  }
+
+  // Перенос количеств реагентов (жидкостей, твёрдых фаз и индикаторов)
+  const oldDstMass = Object.values(targetState.amt).reduce((a, b) => a + b, 0);
+  let movedMass = 0;
+  for (const [id, q] of Object.entries(sourceState.amt)) {
+    if (q <= 0.001) continue;
+    const r = REAGENTS[id];
+    let moveQty = q * frac;
+    if (r?.state === 's' && frac >= 0.95) moveQty = q;
+    moveQty = Math.round(moveQty * 100) / 100;
+    if (moveQty <= 0) continue;
+
+    targetState.amt[id] = Math.round(((targetState.amt[id] || 0) + moveQty) * 100) / 100;
+    const rem = Math.round((q - moveQty) * 100) / 100;
+    if (rem <= 0.02) delete sourceState.amt[id];
+    else sourceState.amt[id] = rem;
+
+    movedMass += moveQty;
+    const unit = r?.state === 's' ? 'порц.' : (r?.state === 'd' ? 'кап.' : 'мл');
+    targetState.addedOrder.push({ id, qty: Math.round(moveQty * 10) / 10, unit });
+  }
+
+  // Пропорциональный перенос выкипания evapMl, чтобы объём перелитой жидкости был точным!
+  if ((sourceState.evapMl || 0) > 0) {
+    const moveEvap = sourceState.evapMl * frac;
+    targetState.evapMl = (targetState.evapMl || 0) + moveEvap;
+    sourceState.evapMl = Math.max(0, sourceState.evapMl - moveEvap);
+  }
+
+  // Перенос кинетических степеней превращения (включая синтезированные квантовые точки и кристаллофосфоры!)
+  const blendW = movedMass / Math.max(0.01, oldDstMass + movedMass);
+  for (const [pk, pv] of Object.entries(sourceState.prog || {})) {
+    if (!pv || pv <= 0) continue;
+    const curDst = targetState.prog[pk] || 0;
+    if (pk.startsWith('qd_') || pk.startsWith('phosphor_') || pk === 'calcine_caco3') {
+      targetState.prog[pk] = curDst > 0 ? (curDst * (1 - blendW) + pv * blendW) : pv;
+    } else {
+      targetState.prog[pk] = Math.max(curDst, pv * blendW + curDst * (1 - blendW));
+    }
+    if (frac >= 0.98) delete sourceState.prog[pk];
+  }
+
+  // Перенос электролизных продуктов и послесвечения
+  for (const ek of Object.keys(sourceState.elecEffect || {})) {
+    const mv = (sourceState.elecEffect[ek] || 0) * frac;
+    if (mv > 0) {
+      targetState.elecEffect[ek] = (targetState.elecEffect[ek] || 0) + mv;
+      sourceState.elecEffect[ek] = Math.max(0, sourceState.elecEffect[ek] - mv);
+    }
+  }
+  if ((sourceState.afterglow || 0) > 0) {
+    targetState.afterglow = Math.max(targetState.afterglow || 0, sourceState.afterglow * 0.9);
+    if (frac >= 0.98) sourceState.afterglow = 0;
+  }
+  if ((sourceState.chemilum || 0) > 0) {
+    targetState.chemilum = Math.max(targetState.chemilum || 0, sourceState.chemilum * 0.9);
+    if (frac >= 0.98) sourceState.chemilum = 0;
+  }
+
+  targetState.temp = Math.round(mixedTemp * 10) / 10;
+  targetState.seen.mixedVessels = true;
+  sourceState.seen.mixedVessels = true;
+
+  // Если исходный сосуд полностью опорожнён — обнуляем его остаточные флаги фильтрации
+  if (Object.keys(sourceState.amt).length === 0) {
+    sourceState.evapMl = 0;
+    sourceState.filteredOrderLen = -1;
+  }
+
+  return {
+    ok: true,
+    movedMl,
+    frac,
+    postTarget: analyzeChemistry(targetState),
+    postSource: analyzeChemistry(sourceState)
+  };
 }
 
 function hexToRgb(hex) {
@@ -773,6 +944,18 @@ export function analyzeChemistry(state) {
       pushPr('CuS', 'чёрный осадок сульфида меди(II)', '#171717', 0.9);
     }
 
+    // Осадки кадмия (БЕЗ тиолового стабилизатора HSCH₂COOH образуются крупные нелюминесцирующие кристаллы CdS↓ / CdSe↓)
+    const hasQdStabilizer = (amt.mpa || 0) > 0;
+    if ((cations.Cd || 0) > 0.02 && !hasQdStabilizer) {
+      if ((anions.S || 0) > 0.02 || (amt.h2s || 0) > 0) {
+        pushPr('CdS', 'ярко-жёлтый осадок сульфида кадмия («кадмиевый жёлтый», макрокристаллы)', '#facc15', 0.92);
+      } else if ((prog.bulk_cdse || 0) >= 0.3) {
+        pushPr('CdSe', 'тёмно-бурый осадок макрокристаллического селенида кадмия (без стабилизатора — нет КТ!)', '#7f1d1d', 0.9);
+      } else if (pH >= 8.4 && nh3Eq <= 0.08) {
+        pushPr('Cd(OH)₂', 'белый осадок гидроксида кадмия', '#f8fafc', 0.8);
+      }
+    }
+
     // Осадки карбонатов (вкл. помутнение известковой/баритовой воды от CO₂) и силикатов
     if (pH >= 6.8) {
       const limeWithCO2 = ((amt.caoh2 || 0) > 0 && (prog.lime_co2 || 0) > 0.2 && (prog.lime_co2 || 0) < 0.88);
@@ -840,6 +1023,13 @@ export function analyzeChemistry(state) {
   // Продукт обжига известняка в муфельной печи при ≥ 800 °C
   if (!wet && (amt.caco3 || 0) > 0 && (prog.calcine_caco3 || 0) >= 0.45) {
     pushPr('CaO', 'негашёная известь (продукт обжига CaCO₃ в муфельной печи)', '#fefce8', 0.9);
+  }
+  // Твердофазные люминофоры (кристаллофосфор ZnS:Cu и борный люминофор)
+  if ((prog.phosphor_znscu || 0) >= 0.4) {
+    pushPr('ZnS:Cu', 'кристаллофосфор сульфида цинка, активированный медью (зелёная фотолюминесценция + послесвечение)', '#dcfce7', 0.92);
+  }
+  if ((prog.phosphor_boric || 0) >= 0.4) {
+    pushPr('B₂O₃·Люм', 'стеклообразный борный люминофор с длительной жёлто-зелёной фосфоресценцией', '#ecfccb', 0.88);
   }
 
   // Обугливание сахарозы конц. серной кислотой и «химический вулкан» Cr₂O₃
@@ -974,6 +1164,22 @@ export function analyzeChemistry(state) {
         chromophores.push(['#ea580c', freeBromine * 2.4 * dil * dyeFade]);
         liquidOpacity = Math.max(liquidOpacity, 0.66);
       }
+
+      // Коллоидные квантовые точки (CdSe, CdS, C-Dots) и органические флуорофоры в дневном свете
+      if ((prog.qd_cdse || 0) > 0.05) {
+        const qdSpec = computeCdSeSpectrum(prog.qd_cdse);
+        chromophores.push([qdSpec.solColor, (0.9 + prog.qd_cdse * 1.6) * dyeFade]);
+        liquidOpacity = Math.max(liquidOpacity, 0.54);
+      } else if ((prog.qd_cds || 0) > 0.08) {
+        chromophores.push(['#fef08a', 1.15 * dyeFade]);
+      } else if ((prog.qd_carbon || 0) > 0.12) {
+        chromophores.push(['#fcd34d', 1.2 * dyeFade]);
+      }
+      if ((amt.fluorescein || 0) > 0) {
+        const flCol = (pH === null || pH >= 5.2) ? '#a3e635' : '#fb923c';
+        chromophores.push([flCol, 2.0 * dyeFade]);
+        liquidOpacity = Math.max(liquidOpacity, 0.56);
+      }
     }
 
     // Индикаторы
@@ -1082,6 +1288,72 @@ export function analyzeChemistry(state) {
     ? Math.round(Math.min(1.85, 0.28 + (ionSum / Math.max(8, vol)) * 9.5) * 100) / 100
     : 0;
 
+  // 13. Расчёт фотолюминесценции (под УФ 365 нм), квантово-размерного эффекта КТ, фосфоресценции и хемилюминесценции
+  const noAdsorbent = (amt.carbon || 0) === 0;
+  const luminescence = {
+    uvColor: '',
+    uvIntensity: 0,
+    selfColor: '',
+    selfIntensity: 0,
+    wavelengthNm: 0,
+    qdDiameterNm: 0,
+    label: '',
+    hasAfterglow: false
+  };
+
+  if ((prog.qd_cdse || 0) > 0.05 && noAdsorbent) {
+    const spec = computeCdSeSpectrum(prog.qd_cdse);
+    const filmFactor = wet ? 1.0 : 0.72;
+    luminescence.uvColor = spec.emColor;
+    luminescence.uvIntensity = Math.min(1, (0.52 + prog.qd_cdse * 0.55) * filmFactor);
+    luminescence.wavelengthNm = spec.wavelengthNm;
+    luminescence.qdDiameterNm = spec.diameterNm;
+    luminescence.label = `КТ CdSe (d = ${String(spec.diameterNm).replace('.', ',')} нм · λ = ${spec.wavelengthNm} нм)`;
+  } else if ((prog.qd_cds || 0) > 0.08 && noAdsorbent) {
+    const dCds = Math.round((1.9 + prog.qd_cds * 1.1) * 10) / 10;
+    const wlCds = Math.round(472 + prog.qd_cds * 28);
+    luminescence.uvColor = '#00e5ff';
+    luminescence.uvIntensity = Math.min(0.95, (0.45 + prog.qd_cds * 0.55) * (wet ? 1.0 : 0.7));
+    luminescence.wavelengthNm = wlCds;
+    luminescence.qdDiameterNm = dCds;
+    luminescence.label = `КТ CdS (d = ${String(dCds).replace('.', ',')} нм · λ = ${wlCds} нм)`;
+  } else if ((prog.qd_carbon || 0) > 0.12 && noAdsorbent) {
+    luminescence.uvColor = '#2dd4bf';
+    luminescence.uvIntensity = Math.min(0.92, (0.35 + prog.qd_carbon * 0.65) * (wet ? 1.0 : 0.7));
+    luminescence.wavelengthNm = 490;
+    luminescence.qdDiameterNm = 3.2;
+    luminescence.label = 'Углеродные КТ C-Dots (λ = 490 нм)';
+  } else if ((prog.phosphor_znscu || 0) >= 0.35) {
+    luminescence.uvColor = '#00ff88';
+    luminescence.uvIntensity = Math.min(1, 0.5 + prog.phosphor_znscu * 0.55);
+    luminescence.wavelengthNm = 525;
+    luminescence.label = 'Кристаллофосфор ZnS:Cu (λ = 525 нм)';
+    luminescence.hasAfterglow = true;
+  } else if ((prog.phosphor_boric || 0) >= 0.35) {
+    luminescence.uvColor = '#a3e635';
+    luminescence.uvIntensity = Math.min(0.96, 0.48 + prog.phosphor_boric * 0.52);
+    luminescence.wavelengthNm = 535;
+    luminescence.label = 'Борный люминофор B₂O₃ (λ = 535 нм)';
+    luminescence.hasAfterglow = true;
+  } else if (wet && (amt.fluorescein || 0) > 0 && (pH === null || pH >= 5.0) && noAdsorbent) {
+    const alkBoost = pH !== null && pH >= 7.5 ? 1.0 : 0.78;
+    luminescence.uvColor = '#39ff14';
+    luminescence.uvIntensity = 0.96 * alkBoost;
+    luminescence.wavelengthNm = 520;
+    luminescence.label = 'Флуоресцеин (λ = 520 нм)';
+  }
+
+  // Собственное свечение БЕЗ УФ-лампы: хемилюминесценция люминола (425 нм) или фосфоресцентное послесвечение
+  if (wet && (state.chemilum || 0) > 0.02) {
+    luminescence.selfColor = '#00b4ff';
+    luminescence.selfIntensity = Math.min(1, state.chemilum);
+    if (!luminescence.wavelengthNm) luminescence.wavelengthNm = 425;
+    luminescence.label = 'Хемилюминесценция люминола (λ = 425 нм)';
+  } else if ((state.afterglow || 0) > 0.02 && luminescence.hasAfterglow) {
+    luminescence.selfColor = luminescence.uvColor || '#00ff88';
+    luminescence.selfIntensity = Math.min(0.88, state.afterglow * 0.85);
+  }
+
   return {
     volume: Math.round(vol * 10) / 10,
     netMassG,
@@ -1104,6 +1376,7 @@ export function analyzeChemistry(state) {
     displacedAg,
     liquidColor,
     liquidOpacity,
+    luminescence,
     smells,
     warnings,
     flameCations
@@ -1111,9 +1384,9 @@ export function analyzeChemistry(state) {
 }
 
 /**
- * Шаг динамической симуляции (теплообмен, кинетика реакций, выделение газов, кипение, электролиз, сухой нагрев)
+ * Шаг динамической симуляции (теплообмен, кинетика реакций, выделение газов, кипение, электролиз, синтез КТ и люминофоров)
  */
-export function stepSimulation(state, dt, speedX = 1) {
+export function stepSimulation(state, dt, speedX = 1, uvLampOn = false) {
   const effDt = Math.min(0.25, dt) * speedX;
   if (effDt <= 0) return { events: [], activeGases: [], gasRate: 0, boiling: false };
 
@@ -1564,6 +1837,70 @@ export function stepSimulation(state, dt, speedX = 1) {
         }
       }
     }
+
+    // 3г. Коллоидный синтез квантовых точек (CdSe, CdS, углеродные C-Dots) и хемилюминесценция люминола
+    if ((amt.cdcl2 || 0) > 0 && (amt.nahse || 0) > 0) {
+      if ((amt.mpa || 0) > 0) {
+        // Со стабилизатором HSCH₂COOH при нагревании (≥ 48 °C) зарождаются и растут нанокристаллы CdSe (2,0 → 5,6 нм)!
+        if (state.temp >= 48 && (prog.qd_cdse || 0) < 1) {
+          const growthRate = 0.048 * effDt * Math.max(0.25, (state.temp - 42) / 36) * (state.stirrerOn ? 1.25 : 1.0);
+          prog.qd_cdse = Math.min(1, (prog.qd_cdse || 0) + growthRate);
+          if (prog.qd_cdse >= 0.06 && !state.seen.qdSynthesized) {
+            state.seen.qdSynthesized = true;
+            events.push('Синтезированы коллоидные квантовые точки CdSe (~2,4 нм, зелёная фотолюминесценция 515 нм)! Включите «🔦 УФ 365 нм».');
+          }
+          if (prog.qd_cdse >= 0.62 && !state.seen.qdRedShift) {
+            state.seen.qdRedShift = true;
+            events.push('Квантово-размерный эффект (созревание Оствальда): нанокристаллы CdSe выросли > 4,6 нм — свечение сместилось в оранжево-красную область (~620 нм)!');
+          }
+        }
+      } else if (state.temp >= 48 && (prog.bulk_cdse || 0) < 1) {
+        prog.bulk_cdse = Math.min(1, (prog.bulk_cdse || 0) + 0.09 * effDt);
+        if (prog.bulk_cdse >= 0.35 && !state.seen.bulkCdSeWarn) {
+          state.seen.bulkCdSeWarn = true;
+          events.push('Без стабилизатора HSCH₂COOH наночастицы слиплись в тёмно-бурый осадок макрокристаллического CdSe↓ (не люминесцирует)');
+        }
+      }
+    }
+
+    if ((amt.cdcl2 || 0) > 0 && ((amt.na2s || 0) > 0 || (amt.h2s || 0) > 0) && (amt.mpa || 0) > 0 && (prog.qd_cds || 0) < 1) {
+      prog.qd_cds = Math.min(1, (prog.qd_cds || 0) + 0.075 * effDt * tempFactor);
+      if (prog.qd_cds >= 0.25 && !state.seen.qdSynthesized) {
+        state.seen.qdSynthesized = true;
+        events.push('Синтезированы коллоидные квантовые точки CdS (голубая фотолюминесценция ~485 нм под УФ 365 нм)!');
+      }
+    }
+
+    if (((amt.glucose || 0) > 0 || (amt.sucrose || 0) > 0) && (amt.nh3 || 0) > 0 && state.temp >= 88 && (prog.qd_carbon || 0) < 1) {
+      prog.qd_carbon = Math.min(1, (prog.qd_carbon || 0) + 0.055 * effDt * tempFactor);
+      if (prog.qd_carbon >= 0.3 && !state.seen.qdSynthesized) {
+        state.seen.qdSynthesized = true;
+        events.push('Гидротермальная карбонизация: синтезированы углеродные квантовые точки C-Dots (бирюзовое УФ-свечение 490 нм)!');
+      }
+    }
+
+    // Хемилюминесценция люминола (щелочной р-р люминола + H₂O₂ + катализатор K₃[Fe(CN)₆] / FeCl₃ / CuSO₄ / KMnO₄ / Br₂)
+    const hasLumCatalyst =
+      (amt.k3fecn6 || 0) > 0 ||
+      (amt.fecl3 || 0) > 0 ||
+      (amt.cuso4 || 0) > 0 ||
+      (amt.kmno4 || 0) > 0 ||
+      (amt.br2 || 0) > 0 ||
+      state.headspace?.gas === 'Cl2';
+    const lumFuelMax = Math.min(amt.luminol || 0, (amt.h2o2 || 0) * 0.25);
+    if (lumFuelMax > 0.02 && hasLumCatalyst && analysis.pH !== null && analysis.pH >= 8.4 && (prog.luminol_burnt || 0) < lumFuelMax) {
+      prog.luminol_burnt = Math.min(lumFuelMax, (prog.luminol_burnt || 0) + 0.038 * effDt);
+      state.chemilum = Math.min(1, (state.chemilum || 0) + effDt * 3.2);
+      emitGas('N2', 1.2 * effDt);
+      if (!state.seen.chemiluminescence) {
+        state.seen.chemiluminescence = true;
+        events.push('✨ Хемилюминесценция! Окисление люминола пероксидом водорода в присутствии катализатора даёт холодное голубое свечение (425 нм)!');
+      }
+    } else if ((state.chemilum || 0) > 0) {
+      state.chemilum = Math.max(0, state.chemilum - effDt * 0.085);
+    }
+  } else if ((state.chemilum || 0) > 0) {
+    state.chemilum = Math.max(0, state.chemilum - effDt * 0.15);
   }
 
   // 4. Обугливание сахарозы конц. H₂SO₄
@@ -1637,6 +1974,35 @@ export function stepSimulation(state, dt, speedX = 1) {
         events.push('Обжиг в муфельной печи (≥ 800 °C): известняк CaCO₃ разложился на негашёную известь CaO и CO₂↑ (масса уменьшилась на 44 %)');
       }
     }
+
+    // Твердофазный синтез кристаллофосфора ZnS:Cu в муфельной печи (≥ 580 °C): шихта цинка + серы/сульфида + следы меди Cu²⁺
+    const hasZnSource = (amt.znso4 || 0) > 0 || (amt.zncl2 || 0) > 0 || (amt.zn || 0) > 0;
+    const hasSSource = (amt.na2s || 0) > 0 || (amt.s || 0) > 0;
+    const hasCuDopant = (amt.cuso4 || 0) > 0 || (amt.cucl2 || 0) > 0 || (amt.cuso4s || 0) > 0 || (amt.cuo || 0) > 0;
+    if (hasZnSource && hasSSource && hasCuDopant && state.temp >= 580 && (prog.phosphor_znscu || 0) < 1) {
+      prog.phosphor_znscu = Math.min(1, (prog.phosphor_znscu || 0) + 0.14 * effDt * (1 + (state.temp - 580) / 250));
+      if (prog.phosphor_znscu >= 0.45 && !state.seen.phosphorSynthesized) {
+        state.seen.phosphorSynthesized = true;
+        events.push('Синтезирован неорганический кристаллофосфор ZnS:Cu! Включите «🔦 УФ 365 нм» для проверки зелёной люминесценции (525 нм) и послесвечения!');
+      }
+    }
+
+    // Сплавление борного люминофора: H₃BO₃ + органический активатор (флуоресцеин или глюкоза) при T ≥ 160 °C
+    if ((amt.h3bo3 || 0) > 0 && ((amt.fluorescein || 0) > 0 || (amt.glucose || 0) > 0) && state.temp >= 160 && (prog.phosphor_boric || 0) < 1) {
+      prog.phosphor_boric = Math.min(1, (prog.phosphor_boric || 0) + 0.12 * effDt);
+      if (prog.phosphor_boric >= 0.45 && !state.seen.phosphorSynthesized) {
+        state.seen.phosphorSynthesized = true;
+        events.push('Получен стеклообразный борный люминофор (H₃BO₃ + активатор) с яркой жёлто-зелёной фосфоресценцией!');
+      }
+    }
+  }
+
+  // Накачка и плавное затухание фосфоресцентного послесвечения кристаллофосфоров (ZnS:Cu, B₂O₃·Люм)
+  const hasPhosphor = (prog.phosphor_znscu || 0) >= 0.35 || (prog.phosphor_boric || 0) >= 0.35;
+  if (uvLampOn && hasPhosphor) {
+    state.afterglow = Math.min(1, (state.afterglow || 0) + effDt * 0.9);
+  } else if ((state.afterglow || 0) > 0) {
+    state.afterglow = Math.max(0, state.afterglow - effDt * 0.075);
   }
 
   // Экзотермическое гашение извести CaO водой: CaO + H₂O → Ca(OH)₂ + Q

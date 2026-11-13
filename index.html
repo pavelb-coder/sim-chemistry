@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ХимЛаб 3D — Интерактивная виртуальная лаборатория по химии</title>
-  <meta name="description" content="Интерактивная 3D виртуальная лаборатория по химии: 91 реактив, 3 лабораторных стола, муфельная печь 950 °C, магнитная мешалка с подогревом, расчёт pH и осадков, сбор газов, режим «Микромир» и 30 практикумов 8–11 классов (ОГЭ/ЕГЭ).">
+  <meta name="description" content="Интерактивная 3D виртуальная лаборатория по химии: 97 реактивов, 3 стола, смешивание сосудов, синтез квантовых точек и люминофоров, УФ 365 нм, муфельная печь 950 °C, термомешалка и 33 практикума.">
   <meta property="og:type" content="website">
   <meta property="og:title" content="ХимЛаб 3D — Виртуальная химическая лаборатория">
-  <meta property="og:description" content="Проводите опыты в 3D на 3 столах: спиртовка, магнитная мешалка с подогревом, муфельная печь ПМ-1000, электролиз, титрование, лупа ионов «Микромир» и готовый отчёт.">
+  <meta property="og:description" content="Проводите опыты в 3D на 3 столах: смешивание нескольких колб и пробирок, синтез квантовых точек CdSe и кристаллофосфоров ZnS:Cu, УФ 365 нм, муфельная печь ПМ-1000, электролиз и титрование.">
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='31' fill='%230f172a'/%3E%3Cpath d='M21 41h22l3.8 6.5a2.6 2.6 0 0 1-2.2 3.9H19.4a2.6 2.6 0 0 1-2.2-3.9z' fill='%2310b981'/%3E%3Cpath d='M27 14v12l-10 19.5a3.4 3.4 0 0 0 3 5h24a3.4 3.4 0 0 0 3-5L37 26V14' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M24 14h16' stroke='%23fff' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='29' cy='35' r='2.3' fill='%23fff'/%3E%3Ccircle cx='35.5' cy='30' r='1.7' fill='%2338bdf8'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./styles/lab.css?v=2.2.1">
+  <link rel="stylesheet" href="./styles/lab.css?v=2.3.0">
 </head>
 <body>
   <div class="app-shell">
@@ -77,8 +77,21 @@
         </button>
       </div>
 
-      <!-- Вторая полоса: посуда, отмена/возврат, камера, скорость времени, тема, звук -->
+      <!-- Вторая полоса: слоты сосудов (смешивание 3 колб/пробирок), посуда, отмена/возврат, камера, скорость, тема, звук -->
       <div class="toolbar">
+        <div class="seg-group" id="slotGroup" role="group" aria-label="Рабочие сосуды (3 слота)">
+          <span class="seg-label">Сосуды</span>
+          <button type="button" class="seg-btn slot-btn active" data-slot="0" id="slotBtn0" title="Рабочий сосуд ①">①</button>
+          <button type="button" class="seg-btn slot-btn" data-slot="1" id="slotBtn1" title="Рабочий сосуд ② (можно приготовить второй раствор и слить с ①!)">②</button>
+          <button type="button" class="seg-btn slot-btn" data-slot="2" id="slotBtn2" title="Рабочий сосуд ③ (третий сосуд на лабораторной стойке)">③</button>
+        </div>
+
+        <button type="button" class="btn btn-mix-quick" id="btnQuickMix" style="display:none" title="Влить содержимое другого непустого сосуда в текущий рабочий сосуд">
+          🫗 <span id="quickMixLabel">Влить ② → ①</span>
+        </button>
+
+        <div class="v-divider"></div>
+
         <div class="seg-group" id="vesselGroup" role="group" aria-label="Лабораторная посуда">
           <button type="button" class="seg-btn active" data-vessel="flask" title="Коническая колба Эрленмейера 100 мл">Колба 100 мл</button>
           <button type="button" class="seg-btn" data-vessel="round" title="Круглодонная реакционная колба 150 мл">Круглодон. 150 мл</button>
@@ -141,6 +154,15 @@
           <span id="vesselCapBadge" style="font-size:11.5px;color:var(--muted)">0 / 100 мл</span>
         </div>
         <div class="panel-scroll">
+          <!-- Панель работы с несколькими колбами / пробирками и их смешивания -->
+          <div class="sec-box mix-vessels-box" id="vesselMixSection">
+            <div class="sec-title">
+              <span>🫗 Колбы и смешивание</span>
+              <span id="activeSlotBadge" style="color:var(--brand);font-weight:800">Сосуд ①</span>
+            </div>
+            <div id="vesselMixControls" class="vessel-mix-controls"></div>
+          </div>
+
           <!-- Содержимое сосуда -->
           <div class="sec-box">
             <div class="sec-title">
@@ -255,6 +277,10 @@
             <span>Собрано газа</span>
             <b id="gaugeGas">0 мл</b>
           </div>
+          <div class="gauge-row" id="gaugeLumRow" style="display:none">
+            <span>Люминесценция</span>
+            <b id="gaugeLum">—</b>
+          </div>
           <div class="gauge-row">
             <span>pH-метр</span>
             <b id="gaugePh">—</b>
@@ -303,8 +329,11 @@
           <button type="button" class="dock-action drip-btn" id="btnBuretteDrop" style="display:none" title="Открыть кран бюретки и прикапать +1,0 мл выбранного жидкого титранта">
             +1 мл
           </button>
-          <button type="button" class="dock-action" id="btnElectrolysis" title="Опустить графитовые электроды и включить источник постоянного тока 12 В">
+          <button type="button" class="dock-action" id="btnElectrolysis" title="Опустить графитовые электроды в текущий сосуд и включить источник тока 12 В">
             ⚡ Электролиз
+          </button>
+          <button type="button" class="dock-action" id="btnUvLamp" title="Лабораторная УФ-лампа Вуда (365 нм) — возбуждение квантовых точек и кристаллофосфоров (клавиша U)">
+            🔦 <span id="uvBtnText">УФ 365 нм</span>
           </button>
           <button type="button" class="dock-action" id="btnFilter" title="Отфильтровать выпавший осадок через воронку со складчатым бумажным фильтром">
             ⏳ Фильтр
@@ -437,6 +466,6 @@
     </div>
   </div>
 
-  <script type="module" src="./src/app.js?v=2.2.1"></script>
+  <script type="module" src="./src/app.js?v=2.3.0"></script>
 </body>
 </html>
