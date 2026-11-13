@@ -3,9 +3,10 @@ import { REAGENTS } from './reagents.js';
 import { VESSELS } from './chemistry.js';
 
 const CAMERA_PRESETS = {
-  all:    { pos: [0.4, 2.35, 6.6], target: [0.35, 1.45, 0], fov: 34 },
-  vessel: { pos: [-0.35, 2.05, 4.15], target: [-0.35, 1.62, 0], fov: 30 },
-  gas:    { pos: [1.05, 2.0, 4.65], target: [0.95, 1.45, 0], fov: 32 },
+  all:    { pos: [0.35, 2.48, 7.15], target: [0.32, 1.42, 0], fov: 35 },
+  vessel: { pos: [-0.35, 2.08, 4.15], target: [-0.35, 1.62, 0], fov: 30 },
+  equip:  { pos: [-0.82, 2.22, 4.85], target: [-0.68, 1.50, 0], fov: 32 },
+  gas:    { pos: [1.15, 2.0, 4.65], target: [1.05, 1.45, 0], fov: 32 },
   lamp:   { pos: [-0.35, 1.25, 3.65], target: [-0.35, 0.92, 0], fov: 30 }
 };
 
@@ -66,6 +67,12 @@ export class Lab3DScene {
     this.gauzeHeat = 0;
     this.prevHeatLvl = 0;
     this.pourAnim = { active: false, t: 0, dur: 1.0, color: '#cfe8f7', solid: false, formula: '' };
+    this.dripAnim = { active: false, t: 0, dur: 0.55, color: '#dff2fc' };
+    this.filterAnim = { active: false, t: 0, dur: 2.1, cakeColor: '#f8fafc' };
+    this.titrantColor = '#dff2fc';
+    this.lastMassKey = '';
+    this.lastPsuKey = '';
+    this.iceCubes = [];
     this.toolAnim = { kind: '', t: 0, dur: 0, extra: {}, burstDone: false };
     this.flameTint = { color: '', until: 0 };
     this.flashEffect = { intensity: 0, color: '#ffffff' };
@@ -128,6 +135,7 @@ export class Lab3DScene {
     this._buildVessels();
     this._buildGasCollector();
     this._buildWashBottle();
+    this._buildLabEquipment();
     this._buildAnimatedProps();
     this._buildParticles();
     this._bindInteractions();
@@ -625,6 +633,19 @@ export class Lab3DScene {
         [0.22 + offset, 1.28]
       ];
     }
+    if (kind === 'round') {
+      const pts = [];
+      const R = 0.46 + offset;
+      // Сферическое тело круглодонной колбы до горлышка
+      for (let i = 0; i <= 12; i++) {
+        const phi = (i / 12) * Math.PI * 0.78; // от нижнего полюса до плечиков
+        const rr = Math.max(0.001, Math.sin(phi) * R);
+        const yy = (1 - Math.cos(phi)) * R;
+        pts.push([rr, yy]);
+      }
+      pts.push([0.185 + offset, 0.92], [0.18 + offset, 1.34], [0.22 + offset, 1.39]);
+      return pts;
+    }
     if (kind === 'tube') {
       const pts = [];
       const R = 0.175 + offset;
@@ -634,6 +655,18 @@ export class Lab3DScene {
       }
       pts.push([R, 1.34], [R + 0.03, 1.38]);
       return pts;
+    }
+    if (kind === 'evap') {
+      // Фарфоровая выпарительная чашка (широкая открытая полусферическая чаша)
+      return [
+        [0.001, 0.0 + offset],
+        [0.19 + offset, 0.01 + offset],
+        [0.34 + offset, 0.09],
+        [0.46 + offset, 0.23],
+        [0.54 + offset, 0.40],
+        [0.58 + offset, 0.52],
+        [0.62 + offset, 0.56]
+      ];
     }
     // beaker
     return [
@@ -653,6 +686,18 @@ export class Lab3DScene {
       }
       return 0.168;
     }
+    if (kind === 'round') {
+      if (yLocal < 0.82) {
+        const R = 0.445;
+        const dy = yLocal - R;
+        return Math.max(0.17, Math.sqrt(Math.max(0.02, R * R - dy * dy)));
+      }
+      return 0.174;
+    }
+    if (kind === 'evap') {
+      const t = Math.max(0, Math.min(1, yLocal / 0.52));
+      return 0.18 + t * 0.37;
+    }
     if (kind === 'beaker') {
       return 0.495;
     }
@@ -665,12 +710,16 @@ export class Lab3DScene {
 
   _liquidMaxHeight(kind) {
     if (kind === 'tube') return 1.08;
+    if (kind === 'round') return 0.86;
+    if (kind === 'evap') return 0.43;
     if (kind === 'beaker') return 0.98;
     return 0.82; // flask 100 ml
   }
 
   _mouthHeight(kind) {
     if (kind === 'tube') return 1.38;
+    if (kind === 'round') return 1.39;
+    if (kind === 'evap') return 0.56;
     if (kind === 'beaker') return 1.21;
     return 1.28;
   }
@@ -688,7 +737,14 @@ export class Lab3DScene {
     g.textAlign = 'left';
     g.textBaseline = 'middle';
 
-    const marks = kind === 'tube' ? [5, 10, 15, 20, 25] : (kind === 'beaker' ? [50, 100, 150, 200] : [20, 40, 60, 80, 100]);
+    const marksMap = {
+      tube: [5, 10, 15, 20, 25],
+      evap: [20, 40, 60, 80],
+      flask: [20, 40, 60, 80, 100],
+      round: [30, 60, 90, 120, 150],
+      beaker: [50, 100, 150, 200]
+    };
+    const marks = marksMap[kind] || marksMap.flask;
     const cap = VESSELS[kind].cap;
     marks.forEach((ml) => {
       const frac = ml / cap;
@@ -946,43 +1002,43 @@ export class Lab3DScene {
   _buildWashBottle() {
     // Пластиковая промывалка с дистиллированной водой H₂O слева на столе
     const wb = new THREE.Group();
-    wb.position.set(-1.75, 0, 0.18);
+    wb.position.set(-2.12, 0, 0.26);
 
     const body = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.26, 0.28, 0.86, 26),
+      new THREE.CylinderGeometry(0.24, 0.26, 0.84, 26),
       new THREE.MeshPhysicalMaterial({ color: '#f8fafc', transparent: true, opacity: 0.72, roughness: 0.35 })
     );
-    body.position.y = 0.43;
+    body.position.y = 0.42;
     body.castShadow = true;
     wb.add(body);
 
     const water = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.24, 0.26, 0.58, 22),
+      new THREE.CylinderGeometry(0.22, 0.24, 0.56, 22),
       new THREE.MeshBasicMaterial({ color: '#bae6fd', transparent: true, opacity: 0.55 })
     );
-    water.position.y = 0.30;
+    water.position.y = 0.29;
     wb.add(water);
 
     const cap = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.11, 0.13, 0.12, 20),
+      new THREE.CylinderGeometry(0.10, 0.12, 0.12, 20),
       new THREE.MeshStandardMaterial({ color: '#2563eb', roughness: 0.4 })
     );
-    cap.position.y = 0.91;
+    cap.position.y = 0.90;
     wb.add(cap);
 
     const nozzleCurve = new THREE.CatmullRomCurve3([
-      new THREE.Vector3(0, 0.96, 0),
-      new THREE.Vector3(0.05, 1.18, 0),
-      new THREE.Vector3(0.28, 1.12, 0)
+      new THREE.Vector3(0, 0.95, 0),
+      new THREE.Vector3(0.05, 1.16, 0),
+      new THREE.Vector3(0.26, 1.10, 0)
     ]);
     const nozzle = new THREE.Mesh(
-      new THREE.TubeGeometry(nozzleCurve, 16, 0.018, 8, false),
+      new THREE.TubeGeometry(nozzleCurve, 16, 0.017, 8, false),
       new THREE.MeshStandardMaterial({ color: '#2563eb', roughness: 0.4 })
     );
     wb.add(nozzle);
 
     const hit = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.35, 0.35, 1.2, 14),
+      new THREE.CylinderGeometry(0.34, 0.34, 1.2, 14),
       new THREE.MeshBasicMaterial({ visible: false })
     );
     hit.position.y = 0.6;
@@ -991,6 +1047,362 @@ export class Lab3DScene {
     this.interactables.push(hit);
 
     this.scene.add(wb);
+  }
+
+  _drawLcdCanvas(ctx, bg, fg, topText, mainText, subText = '') {
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, 256, 128);
+    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(4, 4, 248, 120);
+
+    ctx.fillStyle = fg;
+    ctx.font = '700 20px ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(topText, 16, 32);
+
+    ctx.font = '800 44px ui-monospace, monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(mainText, 240, 84);
+
+    if (subText) {
+      ctx.font = '600 18px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(subText, 16, 112);
+    }
+  }
+
+  _buildLabEquipment() {
+    const darkMetal = new THREE.MeshStandardMaterial({ color: '#334155', metalness: 0.75, roughness: 0.38 });
+    const chrome = new THREE.MeshStandardMaterial({ color: '#cbd5e1', metalness: 0.9, roughness: 0.22 });
+
+    // 1. Магнитный фторопластовый якорь-мешалка на дне сосуда
+    this.stirBarMesh = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.017, 0.085, 8, 14),
+      new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.22, metalness: 0.05 })
+    );
+    this.stirBarMesh.rotation.z = Math.PI / 2;
+    this.stirBarMesh.position.set(0, 0.028, 0);
+    this.stirBarMesh.visible = false;
+    this.vesselRoot.add(this.stirBarMesh);
+
+    // 2. Ледяная баня (кристаллизатор со льдом вокруг сосуда)
+    this.iceBathGroup = new THREE.Group();
+    this.iceBathGroup.visible = false;
+    const basinGlass = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.66, 0.60, 0.44, 36, 1, true),
+      this._createGlassMaterial(0.24)
+    );
+    basinGlass.position.y = 0.20;
+    const basinBottom = new THREE.Mesh(
+      new THREE.CircleGeometry(0.60, 32),
+      this._createGlassMaterial(0.22)
+    );
+    basinBottom.rotation.x = -Math.PI / 2;
+    basinBottom.position.y = 0.005;
+    const iceWater = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.64, 0.58, 0.34, 32),
+      new THREE.MeshPhysicalMaterial({ color: '#bae6fd', transparent: true, opacity: 0.46, roughness: 0.08 })
+    );
+    iceWater.position.y = 0.17;
+    this.iceBathGroup.add(basinGlass, basinBottom, iceWater);
+
+    const iceMat = new THREE.MeshPhysicalMaterial({
+      color: '#e0f2fe',
+      transparent: true,
+      opacity: 0.76,
+      roughness: 0.12,
+      ior: 1.31
+    });
+    for (let i = 0; i < 10; i++) {
+      const ang = (i / 10) * Math.PI * 2;
+      const rr = 0.50 + (i % 2) * 0.05;
+      const cube = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.075, 0.095), iceMat);
+      cube.position.set(Math.cos(ang) * rr, 0.28 + (i % 3) * 0.015, Math.sin(ang) * rr);
+      cube.rotation.set(i * 0.4, ang, i * 0.25);
+      this.iceBathGroup.add(cube);
+      this.iceCubes.push({ mesh: cube, baseY: cube.position.y, ph: i * 0.9 });
+    }
+    this.scene.add(this.iceBathGroup);
+
+    // 3. Титровальная бюретка 25 мл на высоком штативе над сосудом
+    this.buretteGroup = new THREE.Group();
+    this.buretteGroup.visible = false;
+
+    const bStandBase = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.045, 0.36), darkMetal);
+    bStandBase.position.set(-1.02, 0.022, -0.16);
+    const bStandRod = new THREE.Mesh(new THREE.CylinderGeometry(0.020, 0.020, 3.65, 14), chrome);
+    bStandRod.position.set(-1.02, 1.84, -0.16);
+    this.buretteGroup.add(bStandBase, bStandRod);
+
+    // Подвижная каретка бюретки (центрируется над горлышком активного сосуда)
+    this.buretteColumn = new THREE.Group();
+    const bClampArm = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.72, 10), darkMetal);
+    bClampArm.rotation.z = Math.PI / 2;
+    bClampArm.position.set(-0.34, 0.52, -0.08);
+
+    const bGlassTube = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.046, 0.046, 1.05, 22, 1, true),
+      this._createGlassMaterial(0.24)
+    );
+    bGlassTube.position.y = 0.62;
+
+    const bTip = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.036, 0.009, 0.16, 16),
+      this._createGlassMaterial(0.28)
+    );
+    bTip.position.y = 0.02;
+
+    this.buretteLiqMat = new THREE.MeshPhysicalMaterial({
+      color: '#dff2fc',
+      transparent: true,
+      opacity: 0.68,
+      roughness: 0.08
+    });
+    this.buretteLiqMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.039, 0.039, 0.96, 18), this.buretteLiqMat);
+    this.buretteLiqMesh.position.y = 0.60;
+
+    // Поворотный ПТФЭ-кран бюретки
+    this.buretteValve = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.016, 0.016, 0.14, 14),
+      new THREE.MeshStandardMaterial({ color: '#2563eb', roughness: 0.35 })
+    );
+    this.buretteValve.rotation.x = Math.PI / 2;
+    this.buretteValve.position.set(0, 0.09, 0.02);
+
+    const bHit = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.14, 0.14, 1.25, 12),
+      new THREE.MeshBasicMaterial({ visible: false })
+    );
+    bHit.position.y = 0.55;
+    bHit.userData = { action: 'buretteDrop', tip: 'Бюретка 25 мл: нажмите на кран, чтобы прикапать +1,0 мл титранта' };
+    this.interactables.push(bHit);
+
+    this.buretteColumn.add(bClampArm, bGlassTube, bTip, this.buretteLiqMesh, this.buretteValve, bHit);
+    this.buretteGroup.add(this.buretteColumn);
+
+    this.buretteDropMat = new THREE.MeshPhysicalMaterial({ color: '#dff2fc', transparent: true, opacity: 0.85, roughness: 0.05 });
+    this.buretteDropMesh = new THREE.Mesh(new THREE.SphereGeometry(0.022, 12, 12), this.buretteDropMat);
+    this.buretteDropMesh.visible = false;
+    this.scene.add(this.buretteDropMesh);
+    this.scene.add(this.buretteGroup);
+
+    // 4. Электролизная установка: источник постоянного тока 12 В + графитовые электроды в сосуде
+    this.electrolysisGroup = new THREE.Group();
+    this.electrolysisGroup.visible = false;
+
+    const psuX = -1.36;
+    const psuZ = -0.14;
+    const psuBox = new THREE.Mesh(
+      new THREE.BoxGeometry(0.56, 0.38, 0.42),
+      new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.45, metalness: 0.35 })
+    );
+    psuBox.position.set(psuX, 0.19, psuZ);
+    psuBox.castShadow = true;
+
+    this.psuCanvas = document.createElement('canvas');
+    this.psuCanvas.width = 256;
+    this.psuCanvas.height = 128;
+    this.psuCtx = this.psuCanvas.getContext('2d');
+    this._drawLcdCanvas(this.psuCtx, '#062e22', '#34d399', 'DC 12.0 В', '0.00 А', 'ЭЛЕКТРОЛИЗ');
+    this.psuTex = new THREE.CanvasTexture(this.psuCanvas);
+    this.psuTex.colorSpace = THREE.SRGBColorSpace;
+
+    const psuScreen = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.42, 0.21),
+      new THREE.MeshBasicMaterial({ map: this.psuTex })
+    );
+    psuScreen.position.set(psuX, 0.23, psuZ + 0.212);
+
+    const termBlack = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.022, 0.022, 0.05, 14),
+      new THREE.MeshStandardMaterial({ color: '#0f172a', roughness: 0.4 })
+    );
+    termBlack.rotation.x = Math.PI / 2;
+    termBlack.position.set(psuX - 0.13, 0.08, psuZ + 0.22);
+
+    const termRed = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.022, 0.022, 0.05, 14),
+      new THREE.MeshStandardMaterial({ color: '#dc2626', roughness: 0.4 })
+    );
+    termRed.rotation.x = Math.PI / 2;
+    termRed.position.set(psuX + 0.13, 0.08, psuZ + 0.22);
+
+    const psuHit = new THREE.Mesh(
+      new THREE.BoxGeometry(0.62, 0.45, 0.48),
+      new THREE.MeshBasicMaterial({ visible: false })
+    );
+    psuHit.position.set(psuX, 0.22, psuZ);
+    psuHit.userData = { action: 'electrolysis', tip: 'Источник постоянного тока 12 В (нажмите для вкл/выкл электролиза)' };
+    this.interactables.push(psuHit);
+
+    // Держатель и два погружных графитовых электрода (катод − слева, анод + справа)
+    this.electrodeRig = new THREE.Group();
+    const elBridge = new THREE.Mesh(
+      new THREE.BoxGeometry(0.28, 0.045, 0.09),
+      new THREE.MeshStandardMaterial({ color: '#334155', roughness: 0.6 })
+    );
+    this.cathodeMat = new THREE.MeshStandardMaterial({ color: '#27272a', roughness: 0.55, metalness: 0.35 });
+    this.anodeMat = new THREE.MeshStandardMaterial({ color: '#27272a', roughness: 0.65, metalness: 0.25 });
+
+    this.cathodeMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.019, 0.019, 0.85, 16), this.cathodeMat);
+    this.cathodeMesh.position.set(-0.075, -0.42, 0);
+    this.anodeMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.019, 0.019, 0.85, 16), this.anodeMat);
+    this.anodeMesh.position.set(0.075, -0.42, 0);
+
+    const pinBlack = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.06, 12), new THREE.MeshStandardMaterial({ color: '#0f172a' }));
+    pinBlack.position.set(-0.075, 0.04, 0);
+    const pinRed = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.06, 12), new THREE.MeshStandardMaterial({ color: '#dc2626' }));
+    pinRed.position.set(0.075, 0.04, 0);
+
+    this.electrodeRig.add(elBridge, this.cathodeMesh, this.anodeMesh, pinBlack, pinRed);
+
+    this.wireCathodeMesh = null;
+    this.wireAnodeMesh = null;
+    this.electrolysisGroup.add(psuBox, psuScreen, termBlack, termRed, psuHit, this.electrodeRig);
+    this.scene.add(this.electrolysisGroup);
+    this._rebuildElectrodeWires('flask');
+
+    // 5. Стойка с фильтровальной воронкой на столе + активная воронка над сосудом при фильтровании
+    this.funnelStandGroup = new THREE.Group();
+    this.funnelStandGroup.position.set(0.66, 0, -0.36);
+
+    const fBase = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.24, 0.04, 24), darkMetal);
+    fBase.position.y = 0.02;
+    const fPost = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.86, 12), chrome);
+    fPost.position.set(-0.12, 0.44, 0);
+    const fRing = new THREE.Mesh(new THREE.TorusGeometry(0.14, 0.014, 10, 28), darkMetal);
+    fRing.rotation.x = Math.PI / 2;
+    fRing.position.set(0, 0.72, 0);
+
+    const funnelConePts = [
+      new THREE.Vector2(0.022, 0.0),
+      new THREE.Vector2(0.025, 0.22),
+      new THREE.Vector2(0.19, 0.50)
+    ];
+    const restFunnelGlass = new THREE.Mesh(
+      new THREE.LatheGeometry(funnelConePts, 32),
+      this._createGlassMaterial(0.24)
+    );
+    restFunnelGlass.position.set(0, 0.42, 0);
+
+    this.restFilterPaperMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.92, side: THREE.DoubleSide });
+    const restPaper = new THREE.Mesh(
+      new THREE.ConeGeometry(0.165, 0.25, 18, 1, true),
+      this.restFilterPaperMat
+    );
+    restPaper.rotation.x = Math.PI;
+    restPaper.position.set(0, 0.78, 0);
+
+    const fHit = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.25, 0.25, 1.0, 12),
+      new THREE.MeshBasicMaterial({ visible: false })
+    );
+    fHit.position.y = 0.52;
+    fHit.userData = { action: 'filter', tip: 'Воронка с бумажным фильтром: нажмите, чтобы отфильтровать осадок' };
+    this.interactables.push(fHit);
+
+    this.funnelStandGroup.add(fBase, fPost, fRing, restFunnelGlass, restPaper, fHit);
+    this.scene.add(this.funnelStandGroup);
+
+    // Активная воронка над горлышком сосуда во время фильтрования
+    this.filterActiveGroup = new THREE.Group();
+    this.filterActiveGroup.visible = false;
+    const actFunnelGlass = new THREE.Mesh(new THREE.LatheGeometry(funnelConePts, 32), this._createGlassMaterial(0.26));
+    this.actFilterPaperMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.92, side: THREE.DoubleSide });
+    const actPaper = new THREE.Mesh(new THREE.ConeGeometry(0.165, 0.25, 18, 1, true), this.actFilterPaperMat);
+    actPaper.rotation.x = Math.PI;
+    actPaper.position.y = 0.36;
+    this.filterFiltrateStream = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.012, 0.009, 0.36, 10),
+      new THREE.MeshPhysicalMaterial({ color: '#dff2fc', transparent: true, opacity: 0.72, roughness: 0.05 })
+    );
+    this.filterFiltrateStream.position.y = -0.16;
+    this.filterActiveGroup.add(actFunnelGlass, actPaper, this.filterFiltrateStream);
+    this.scene.add(this.filterActiveGroup);
+
+    // 6. Лабораторные электронные весы (0,01 г) справа на столе
+    this.balanceGroup = new THREE.Group();
+    const balX = 2.34;
+    const balZ = 0.22;
+    const balBody = new THREE.Mesh(
+      new THREE.BoxGeometry(0.62, 0.14, 0.56),
+      new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.32, metalness: 0.06 })
+    );
+    balBody.position.set(balX, 0.07, balZ);
+    balBody.castShadow = true;
+
+    const balNeck = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.05, 18), darkMetal);
+    balNeck.position.set(balX, 0.155, balZ - 0.03);
+
+    const balPan = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.21, 0.022, 32), chrome);
+    balPan.position.set(balX, 0.185, balZ - 0.03);
+    balPan.castShadow = true;
+
+    this.balCanvas = document.createElement('canvas');
+    this.balCanvas.width = 256;
+    this.balCanvas.height = 128;
+    this.balCtx = this.balCanvas.getContext('2d');
+    this._drawLcdCanvas(this.balCtx, '#0f172a', '#38bdf8', 'МАССА НЕТТО', '0,00 г', 'TARE OK');
+    this.balTex = new THREE.CanvasTexture(this.balCanvas);
+    this.balTex.colorSpace = THREE.SRGBColorSpace;
+
+    const balScreen = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.46, 0.11),
+      new THREE.MeshBasicMaterial({ map: this.balTex })
+    );
+    balScreen.rotation.x = -Math.PI / 5;
+    balScreen.position.set(balX, 0.115, balZ + 0.265);
+
+    const balHit = new THREE.Mesh(
+      new THREE.BoxGeometry(0.68, 0.32, 0.62),
+      new THREE.MeshBasicMaterial({ visible: false })
+    );
+    balHit.position.set(balX, 0.16, balZ);
+    balHit.userData = { action: 'weigh', tip: 'Электронные весы (0,01 г): нажмите, чтобы записать массу смеси в журнал' };
+    this.interactables.push(balHit);
+
+    this.balanceGroup.add(balBody, balNeck, balPan, balScreen, balHit);
+    this.scene.add(this.balanceGroup);
+  }
+
+  _rebuildElectrodeWires(kind) {
+    if (this.wireCathodeMesh) {
+      this.electrolysisGroup.remove(this.wireCathodeMesh);
+      this.wireCathodeMesh.geometry.dispose();
+    }
+    if (this.wireAnodeMesh) {
+      this.electrolysisGroup.remove(this.wireAnodeMesh);
+      this.wireAnodeMesh.geometry.dispose();
+    }
+    const vY = kind === 'tube' ? 0.92 : this.vesselBaseY;
+    const topY = vY + this._mouthHeight(kind) + 0.05;
+    const elH = kind === 'evap' ? 0.48 : 0.88;
+    this.cathodeMesh.scale.y = elH / 0.85;
+    this.cathodeMesh.position.y = -elH / 2;
+    this.anodeMesh.scale.y = elH / 0.85;
+    this.anodeMesh.position.y = -elH / 2;
+    this.electrodeRig.position.set(this.vesselX, topY, 0);
+
+    const cCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-1.49, 0.08, 0.08),
+      new THREE.Vector3(-1.25, topY + 0.22, 0.06),
+      new THREE.Vector3(this.vesselX - 0.075, topY + 0.06, 0)
+    ]);
+    const aCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-1.23, 0.08, 0.08),
+      new THREE.Vector3(-0.92, topY + 0.28, -0.04),
+      new THREE.Vector3(this.vesselX + 0.075, topY + 0.06, 0)
+    ]);
+    this.wireCathodeMesh = new THREE.Mesh(
+      new THREE.TubeGeometry(cCurve, 28, 0.011, 8, false),
+      new THREE.MeshStandardMaterial({ color: '#0f172a', roughness: 0.6 })
+    );
+    this.wireAnodeMesh = new THREE.Mesh(
+      new THREE.TubeGeometry(aCurve, 28, 0.011, 8, false),
+      new THREE.MeshStandardMaterial({ color: '#dc2626', roughness: 0.5 })
+    );
+    this.electrolysisGroup.add(this.wireCathodeMesh, this.wireAnodeMesh);
   }
 
   _buildAnimatedProps() {
@@ -1438,6 +1850,26 @@ export class Lab3DScene {
     this.wake(3200);
   }
 
+  setTitrantColor(hexColor) {
+    this.titrantColor = hexColor && hexColor !== '#F8FAFC' ? hexColor : '#dff2fc';
+    if (this.buretteLiqMat) {
+      this.buretteLiqMat.color.set(this.titrantColor);
+    }
+    this.wake(600);
+  }
+
+  triggerBuretteDrop(hexColor) {
+    const col = hexColor && hexColor !== '#F8FAFC' ? hexColor : (this.titrantColor || '#dff2fc');
+    this.dripAnim = { active: true, t: 0, dur: 0.52, color: col };
+    this.triggerSplash(0.28);
+    this.wake(1800);
+  }
+
+  triggerFiltration(cakeColor = '#f8fafc') {
+    this.filterAnim = { active: true, t: 0, dur: 2.1, cakeColor: cakeColor || '#f8fafc' };
+    this.wake(2800);
+  }
+
   wake(ms = 2200) {
     this.awakeUntil = Math.max(this.awakeUntil, performance.now() + ms);
     if (this.sleeping && this.webglSupported) {
@@ -1462,6 +1894,35 @@ export class Lab3DScene {
 
     if (prevVessel !== state.vessel) {
       this._rebuildDeliveryTube(state.vessel);
+      this._rebuildElectrodeWires(state.vessel);
+    }
+
+    // Обновляем цифровое ЖК-табло электронных весов при изменении массы смеси
+    const massStr = `${(analysis.netMassG || 0).toFixed(2).replace('.', ',')} г`;
+    if (massStr !== this.lastMassKey && this.balCtx) {
+      this.lastMassKey = massStr;
+      this._drawLcdCanvas(this.balCtx, '#0f172a', '#38bdf8', 'МАССА НЕТТО', massStr, state.vessel.toUpperCase());
+      this.balTex.needsUpdate = true;
+    }
+
+    // Обновляем цифровое табло блока питания электролизёра
+    const ampStr = `${(analysis.currentAmp || 0).toFixed(2).replace('.', ',')} А`;
+    const psuSub = !analysis.wet ? 'ЦЕПЬ РАЗОМКНУТА' : (analysis.isElectrolyte ? 'ЭЛЕКТРОЛИТ' : 'НЕЭЛЕКТРОЛИТ');
+    const psuKey = `${ampStr}|${psuSub}`;
+    if (psuKey !== this.lastPsuKey && this.psuCtx) {
+      this.lastPsuKey = psuKey;
+      const fg = analysis.currentAmp > 0 ? '#34d399' : '#f59e0b';
+      this._drawLcdCanvas(this.psuCtx, '#062e22', fg, 'DC 12,0 В', ampStr, psuSub);
+      this.psuTex.needsUpdate = true;
+    }
+
+    // Цвет осадка на покоящемся бумажном фильтре
+    if (this.restFilterPaperMat) {
+      if (Array.isArray(state.filteredSolids) && state.filteredSolids.length > 0) {
+        this.restFilterPaperMat.color.set(state.filteredSolids[0].color || '#f8fafc');
+      } else {
+        this.restFilterPaperMat.color.set('#ffffff');
+      }
     }
 
     // Если выпал новый осадок — рождаем свежую порцию оседающих хлопьев
@@ -1493,6 +1954,9 @@ export class Lab3DScene {
 
     if (
       state.heatLvl > 0 ||
+      state.iceBathOn ||
+      state.stirrerOn ||
+      state.electrolysisOn ||
       simInfo.gasRate > 0.01 ||
       simInfo.boiling ||
       simInfo.volcanoErupting ||
@@ -1680,15 +2144,15 @@ export class Lab3DScene {
 
     if (!s || !a) return busy;
 
-    // 2. Посуда, штатив/треножник и уровень жидкости
+    // 2. Посуда, штатив/треножник, ледяная баня, мешалка, бюретка, электролизёр и уровень жидкости
     const kind = s.vessel;
     const vesselY = kind === 'tube' ? 0.92 : this.vesselBaseY;
     this.vesselRoot.position.set(this.vesselX, vesselY, 0);
-    for (const k of ['flask', 'tube', 'beaker']) {
-      this.vesselMeshes[k].visible = k === kind;
+    for (const k of ['flask', 'round', 'tube', 'beaker', 'evap']) {
+      if (this.vesselMeshes[k]) this.vesselMeshes[k].visible = k === kind;
     }
     this.tripodGroup.visible = kind !== 'tube';
-    this.retortGroup.visible = kind === 'tube';
+    this.retortGroup.visible = kind === 'tube' || kind === 'round';
     this.gasRigGroup.visible = !!s.tubeOn && VESSELS[kind].allowTube;
 
     const cap = VESSELS[kind].cap;
@@ -1696,6 +2160,80 @@ export class Lab3DScene {
     const liqFrac = Math.min(1.04, a.volume / cap);
     const liqLocalY = a.wet ? Math.max(0.045, liqFrac * maxH) : -0.2;
     const liqWorldY = vesselY + liqLocalY;
+    const mouthLocalY = this._mouthHeight(kind);
+    const mouthWorldY = vesselY + mouthLocalY;
+
+    // 2а. Ледяная баня вокруг сосуда
+    this.iceBathGroup.visible = !!s.iceBathOn;
+    if (s.iceBathOn) {
+      busy = true;
+      this.iceBathGroup.position.set(this.vesselX, vesselY - 0.04, 0);
+      const tIce = ts / 1000;
+      for (const ic of this.iceCubes) {
+        ic.mesh.position.y = ic.baseY + Math.sin(tIce * 2.1 + ic.ph) * 0.012;
+        ic.mesh.rotation.y += dt * 0.18;
+      }
+    }
+
+    // 2б. Магнитная мешалка (вращающийся фторопластовый якорь + вихревое покачивание мениска)
+    this.stirBarMesh.visible = !!s.stirrerOn;
+    if (s.stirrerOn) {
+      busy = true;
+      this.stirBarMesh.rotation.y += dt * 22.0;
+      if (a.wet) {
+        this.slosh.angle = 0.065 * Math.sin(ts / 95);
+      }
+    }
+
+    // 2в. Титровальная бюретка 25 мл над сосудом
+    this.buretteGroup.visible = !!s.buretteOn;
+    if (s.buretteOn) {
+      this.buretteColumn.position.set(this.vesselX, mouthWorldY + 0.18, 0);
+      const remFrac = Math.max(0.06, 1 - ((s.buretteUsedMl || 0) % 25) / 25);
+      const bH = 0.96 * remFrac;
+      this.buretteLiqMesh.scale.set(1, remFrac, 1);
+      this.buretteLiqMesh.position.y = 0.12 + bH / 2;
+    }
+
+    // 2г. Электролизная установка и покрытие катода металлом (Cu⁰ / Ag⁰)
+    this.electrolysisGroup.visible = !!s.electrolysisOn;
+    if (s.electrolysisOn) {
+      if ((s.coatings.copperPlated || 0) > 0.12) {
+        this.cathodeMat.color.set('#c8753c');
+        this.cathodeMat.metalness = 0.85;
+      } else if ((s.coatings.silverPlated || 0) > 0.12) {
+        this.cathodeMat.color.set('#f8fafc');
+        this.cathodeMat.metalness = 0.92;
+      } else {
+        this.cathodeMat.color.set('#27272a');
+        this.cathodeMat.metalness = 0.35;
+      }
+
+      // Генерация струек мелких пузырьков непосредственно на катоде и аноде
+      if (a.wet && a.currentAmp > 0 && this.bubbles.length < 210) {
+        busy = true;
+        if (sim.cathodeGas && Math.random() < 0.72) {
+          this.bubbles.push({
+            x: -0.075 + (Math.random() - 0.5) * 0.025,
+            y: Math.max(0.05, liqLocalY * (0.25 + Math.random() * 0.55)),
+            z: (Math.random() - 0.5) * 0.025,
+            r: 0.006 + Math.random() * 0.008,
+            vy: 0.36 + Math.random() * 0.25,
+            ph: Math.random() * 6.28
+          });
+        }
+        if (sim.anodeGas && Math.random() < 0.65) {
+          this.bubbles.push({
+            x: 0.075 + (Math.random() - 0.5) * 0.025,
+            y: Math.max(0.05, liqLocalY * (0.25 + Math.random() * 0.55)),
+            z: (Math.random() - 0.5) * 0.025,
+            r: 0.006 + Math.random() * 0.008,
+            vy: 0.34 + Math.random() * 0.24,
+            ph: Math.random() * 6.28
+          });
+        }
+      }
+    }
 
     // Колебания мениска жидкости (маятник с затуханием)
     this.slosh.vel += (-28 * this.slosh.angle - 3.6 * this.slosh.vel) * dt;
@@ -2091,6 +2629,44 @@ export class Lab3DScene {
         } else {
           this.streamMesh.visible = false;
         }
+      }
+    }
+
+    // 8б. Капля титранта из крана бюретки и поворот вентиля крана
+    if (this.dripAnim.active && s.buretteOn) {
+      busy = true;
+      this.dripAnim.t += dt;
+      const dp = this.dripAnim.t / this.dripAnim.dur;
+      if (dp >= 1) {
+        this.dripAnim.active = false;
+        this.buretteDropMesh.visible = false;
+        this.buretteValve.rotation.z = 0;
+      } else {
+        this.buretteValve.rotation.z = Math.sin(dp * Math.PI) * 1.1;
+        const startY = mouthY + 0.18;
+        const endY = a.wet ? liqWorldY : vesselY + 0.05;
+        this.buretteDropMesh.visible = true;
+        this.buretteDropMat.color.set(this.dripAnim.color);
+        this.buretteDropMesh.position.set(this.vesselX, startY - (startY - endY) * (dp * dp), 0);
+      }
+    } else {
+      this.buretteDropMesh.visible = false;
+    }
+
+    // 8в. Анимация фильтрования осадка через стеклянную воронку со складчатым бумажным фильтром
+    if (this.filterAnim.active) {
+      busy = true;
+      this.filterAnim.t += dt;
+      const fp = this.filterAnim.t / this.filterAnim.dur;
+      if (fp >= 1) {
+        this.filterAnim.active = false;
+        this.filterActiveGroup.visible = false;
+      } else {
+        this.filterActiveGroup.visible = true;
+        this.filterActiveGroup.position.set(this.vesselX, mouthY + 0.04, 0);
+        this.actFilterPaperMat.color.set('#ffffff').lerp(new THREE.Color(this.filterAnim.cakeColor), Math.min(1, fp * 1.5));
+        this.filterFiltrateStream.visible = fp > 0.12 && fp < 0.90;
+        this.filterFiltrateStream.material.color.set(a.liquidColor || '#dff2fc');
       }
     }
 

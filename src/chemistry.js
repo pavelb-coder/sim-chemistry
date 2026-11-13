@@ -3,19 +3,33 @@ import { REAGENTS, FLAME_COLORS } from './reagents.js';
 export const VESSELS = {
   flask: {
     id: 'flask',
-    name: 'Коническая колба',
+    name: 'Коническая колба Эрленмейера',
     short: 'Колба 100 мл',
     cap: 100,
     glassHeatCap: 14,
-    allowTube: true
+    allowTube: true,
+    evapFactor: 1.0,
+    dryMaxBoost: 0
+  },
+  round: {
+    id: 'round',
+    name: 'Круглодонная реакционная колба',
+    short: 'Круглодон. 150 мл',
+    cap: 150,
+    glassHeatCap: 16,
+    allowTube: true,
+    evapFactor: 0.85,
+    dryMaxBoost: 25
   },
   tube: {
     id: 'tube',
-    name: 'Пробирка',
+    name: 'Химическая пробирка',
     short: 'Пробирка 25 мл',
     cap: 25,
     glassHeatCap: 3.5,
-    allowTube: true
+    allowTube: true,
+    evapFactor: 0.9,
+    dryMaxBoost: 0
   },
   beaker: {
     id: 'beaker',
@@ -23,7 +37,19 @@ export const VESSELS = {
     short: 'Стакан 200 мл',
     cap: 200,
     glassHeatCap: 24,
-    allowTube: false
+    allowTube: false,
+    evapFactor: 1.35,
+    dryMaxBoost: 0
+  },
+  evap: {
+    id: 'evap',
+    name: 'Фарфоровая выпарительная чашка',
+    short: 'Чашка 80 мл',
+    cap: 80,
+    glassHeatCap: 9.5,
+    allowTube: false,
+    evapFactor: 3.2,
+    dryMaxBoost: 155
   }
 };
 
@@ -49,6 +75,15 @@ export function createInitialLabState(vessel = 'flask') {
     prog: {},
     temp: 22.0,
     heatLvl: 0,
+    iceBathOn: false,
+    stirrerOn: false,
+    buretteOn: false,
+    buretteUsedMl: 0,
+    electrolysisOn: false,
+    electrolysisSummary: { cathode: '', anode: '' },
+    elecEffect: { freeI2: 0, freeBr2: 0, ohAdded: 0, hAdded: 0, sColloid: 0, cuReduced: 0, agReduced: 0 },
+    filteredSolids: [],
+    filteredOrderLen: -1,
     tubeOn: false,
     collectedGas: {},
     evapMl: 0,
@@ -83,7 +118,13 @@ export function createInitialLabState(vessel = 'flask') {
       ester: false,
       xantho: false,
       hotPbI2: false,
-      goldenRainRecryst: false
+      goldenRainRecryst: false,
+      electrolysis: false,
+      nonElectrolyteChecked: false,
+      titrated: false,
+      filtered: false,
+      crystallizedSalt: false,
+      iceCooled: false
     },
     simTime: 0
   };
@@ -184,14 +225,15 @@ export function analyzeChemistry(state) {
       else weakAcidPh = Math.min(weakAcidPh, r.pH0 || 3.5);
       addAn(r.an, eq);
     }
+    const NON_ION_CATS = new Set(['met', 'acid', 'base', 'salt', 'ind', 'ox', 'org', 'oth']);
     if (r.base) {
       baseEq += eq * r.base;
       if (r.strongBase) strongBaseEq += eq * r.base;
       if (r.nh3) nh3Eq += eq * 1.1;
-      addCat(r.cat, eq);
+      if (r.cat && !NON_ION_CATS.has(r.cat)) addCat(r.cat, eq);
     }
-    if (r.cat === 'salt' || r.cat) {
-      if (r.cat && !r.base) addCat(r.cat, eq);
+    if (r.category === 'salt' || (r.cat && !NON_ION_CATS.has(r.cat))) {
+      if (r.cat && !NON_ION_CATS.has(r.cat) && !r.base) addCat(r.cat, eq);
       if (r.an && !r.acid) addAn(r.an, eq);
     }
   }
@@ -341,10 +383,26 @@ export function analyzeChemistry(state) {
     }
   }
 
-  // 5. Окислительно-восстановительные реакции в растворе
+  // 5. Окислительно-восстановительные реакции и продукты электролиза в растворе
   const redox = {};
-  let freeIodine = (amt.i2 || 0) / 10;
-  let freeBromine = (amt.br2 || 0) / 10;
+  const elEff = state.elecEffect || {};
+  if ((elEff.ohAdded || 0) > 0) {
+    baseEq += elEff.ohAdded;
+    strongBaseEq += elEff.ohAdded;
+  }
+  if ((elEff.hAdded || 0) > 0) {
+    acidEq += elEff.hAdded;
+    strongAcidEq += elEff.hAdded;
+  }
+  if ((elEff.cuReduced || 0) > 0 && (cations.Cu || 0) > 0) {
+    cations.Cu = Math.max(0, cations.Cu - elEff.cuReduced);
+  }
+  if ((elEff.agReduced || 0) > 0 && (cations.Ag || 0) > 0) {
+    cations.Ag = Math.max(0, cations.Ag - elEff.agReduced);
+  }
+
+  let freeIodine = (amt.i2 || 0) / 10 + (elEff.freeI2 || 0);
+  let freeBromine = (amt.br2 || 0) / 10 + (elEff.freeBr2 || 0);
   let manganateGreen = (wet && (amt.kmno4s || 0) > 0 && (prog.dry_kmno4 || 0) >= 0.45) ? 0.6 : 0;
   let cr3Green = (cations.Cr || 0);
   const netPre = baseEq - acidEq;
@@ -744,7 +802,7 @@ export function analyzeChemistry(state) {
     pushPr('Cr₂O₃', 'тёмно-зелёный рыхлый кратер оксида хрома(III) («вулкан»)', '#166534', 1.0);
   }
 
-  // Сухое разложение малахита, перманганата, медного купороса или нелетучие осадки после выкипания воды
+  // Сухое разложение малахита, перманганата, медного купороса или нелетучие осадки и выкристаллизованные соли после выпаривания воды
   if (!wet && ((prog.dry_malach || 0) >= 0.6 || (prog.cuoh2_dec || 0) >= 0.55)) {
     pushPr('CuO', 'чёрный порошок оксида меди(II)', '#1c1917', 0.9);
   }
@@ -756,6 +814,31 @@ export function analyzeChemistry(state) {
   }
   if (!wet && (prog.dry_cuso4 || 0) >= 0.6) {
     pushPr('CuSO₄(безв.)', 'белый порошок безводного сульфата меди(II)', '#f8fafc', 0.85);
+  }
+  if (!wet && (state.evapMl || 0) >= 3.5 && precipitates.length === 0) {
+    const saltEntry = Object.entries(amt).find(([id, q]) => q > 0 && ['salt', 'base'].includes(REAGENTS[id]?.category || REAGENTS[id]?.cat));
+    if (saltEntry) {
+      const sr = REAGENTS[saltEntry[0]];
+      const sCol = sr.color && sr.color !== '#F8FAFC' ? sr.color : '#f8fafc';
+      pushPr(`${sr.formula}(крист.)`, `кристаллический остаток ${sr.name.toLowerCase()} после выпаривания`, sCol, 0.88);
+    }
+  }
+  if (wet && (elEff.sColloid || 0) >= 0.25) {
+    pushPr('S(колл.)', 'жёлтая муть серы у анода', '#fef08a', 0.8);
+  }
+
+  // Учёт фильтрования: если осадок уже отделён на бумажном фильтре и новые реагенты не добавлялись — раствор остаётся чистым фильтратом
+  if (
+    Array.isArray(state.filteredSolids) &&
+    state.filteredSolids.length > 0 &&
+    state.filteredOrderLen === (state.addedOrder?.length || 0)
+  ) {
+    const removedSet = new Set(state.filteredSolids.map((f) => f.formula));
+    for (let i = precipitates.length - 1; i >= 0; i--) {
+      if (removedSet.has(precipitates[i].formula)) {
+        precipitates.splice(i, 1);
+      }
+    }
   }
 
   // 9. Окраска раствора (закон Бугера — Ламберта — Бера + индикаторы + адсорбция углём)
@@ -923,8 +1006,30 @@ export function analyzeChemistry(state) {
   // 11. Катионы для окрашивания пламени (нихромовая петля)
   const flameCations = Object.keys(FLAME_COLORS).filter((c) => (cations[c] || 0) > 0.03);
 
+  // 12. Расчёт показаний электронных весов (масса нетто смеси, г) и электропроводности раствора
+  let solidMassG = 0;
+  for (const [id, q] of Object.entries(amt)) {
+    if (q > 0 && REAGENTS[id]?.state === 's') {
+      const p = Math.min(1, prog[id] || 0);
+      solidMassG += q * 2.45 * (1 - p * 0.25);
+    }
+  }
+  const liqDensity = concH2SO4 ? 1.78 : (concHNO3 ? 1.38 : 1.03);
+  const netMassG = Math.round(((wet ? vol * liqDensity : 0) + solidMassG) * 100) / 100;
+
+  let ionSum = acidEq + baseEq;
+  for (const v of Object.values(cations)) ionSum += v;
+  for (const v of Object.values(anions)) ionSum += v;
+  const isElectrolyte = wet && ionSum >= 0.04;
+  const currentAmp = (state.electrolysisOn && isElectrolyte)
+    ? Math.round(Math.min(1.85, 0.28 + (ionSum / Math.max(8, vol)) * 9.5) * 100) / 100
+    : 0;
+
   return {
     volume: Math.round(vol * 10) / 10,
+    netMassG,
+    isElectrolyte,
+    currentAmp,
     wet,
     pH,
     acidEq,
@@ -949,7 +1054,7 @@ export function analyzeChemistry(state) {
 }
 
 /**
- * Шаг динамической симуляции (теплообмен, кинетика реакций, выделение газов, кипение, сухой нагрев)
+ * Шаг динамической симуляции (теплообмен, кинетика реакций, выделение газов, кипение, электролиз, сухой нагрев)
  */
 export function stepSimulation(state, dt, speedX = 1) {
   const effDt = Math.min(0.25, dt) * speedX;
@@ -961,30 +1066,37 @@ export function stepSimulation(state, dt, speedX = 1) {
   const { wet, volume } = analysis;
   const amt = state.amt;
   const prog = state.prog;
+  const vInfo = VESSELS[state.vessel] || VESSELS.flask;
 
-  // 1. Тепловой баланс (нагрев спиртовкой + остывание по Ньютону)
+  // 1. Тепловой баланс (нагрев спиртовкой, ледяная баня 2 °C или остывание по Ньютону)
   const heatCap = computeHeatCapacity(state);
-  const targetAmbient = 22.0;
-  if (state.heatLvl > 0) {
+  const targetAmbient = state.iceBathOn ? 2.0 : 22.0;
+  if (state.heatLvl > 0 && !state.iceBathOn) {
     if (wet) {
       // Мощность спиртовки: в пробирке закипает быстро, в стакане — плавно
       const power = [0, 38, 82, 145][state.heatLvl] || 0;
-      const loss = (state.temp - targetAmbient) * 0.42;
+      const loss = (state.temp - 22.0) * 0.42;
       state.temp += ((power - loss) / Math.max(5, heatCap)) * effDt * 4.2;
       if (state.temp > 100.2) state.temp = 100.2;
     } else {
-      // Сухой нагрев до ~360 °C
-      const dryMax = [22, 165, 275, 370][state.heatLvl];
-      state.temp += (dryMax - state.temp) * Math.min(1, effDt * 0.22);
+      // Сухой нагрев (до ~370 °C в стекле и до ~525 °C в фарфоровой чашке)
+      const boost = vInfo.dryMaxBoost || 0;
+      const dryMax = [22, 165 + boost * 0.5, 275 + boost * 0.8, 370 + boost][state.heatLvl];
+      state.temp += (dryMax - state.temp) * Math.min(1, effDt * 0.24);
     }
   } else {
-    const coolRate = wet ? 0.055 : 0.085;
+    const coolRate = state.iceBathOn ? 0.28 : (wet ? 0.055 : 0.085);
     state.temp += (targetAmbient - state.temp) * Math.min(1, effDt * coolRate * 2.2);
     if (Math.abs(state.temp - targetAmbient) < 0.08) state.temp = targetAmbient;
+    if (state.iceBathOn && state.temp <= 8.0 && !state.seen.iceCooled) {
+      state.seen.iceCooled = true;
+      events.push('Ледяная баня охладила реакционную смесь ниже +8 °C');
+    }
   }
 
-  // Температурный коэффициент скорости Вант-Гоффа
-  const tempFactor = Math.pow(1.28, Math.max(0, (state.temp - 22) / 10));
+  // Температурный коэффициент скорости Вант-Гоффа + ускорение от магнитной мешалки
+  const tempFactor = Math.pow(1.28, Math.max(-0.5, (state.temp - 22) / 10));
+  const stirFactor = state.stirrerOn && wet ? 1.65 : 1.0;
 
   const activeGases = [];
   let gasRate = 0; // усл. мл/с
@@ -997,6 +1109,8 @@ export function stepSimulation(state, dt, speedX = 1) {
 
   let volcanoErupting = false;
   let goldenRainSparkle = false;
+  let cathodeGas = '';
+  let anodeGas = '';
 
   // 2. Реакции металлов и твёрдых веществ с водой, кислотами, щелочами и солями
   for (const [id, q] of Object.entries(amt)) {
@@ -1029,7 +1143,7 @@ export function stepSimulation(state, dt, speedX = 1) {
         const passivated = r.passive && (analysis.concH2SO4 || analysis.concHNO3) && state.temp < 55;
         if (!passivated && (r.oxidizingAcidRate || r.acidRate) && analysis.acidEq > 0.03) {
           const baseR = r.oxidizingAcidRate || r.acidRate;
-          const rate = baseR * tempFactor * effDt * 2.2;
+          const rate = baseR * tempFactor * stirFactor * effDt * 2.2;
           prog[id] = Math.min(1, p + rate);
           const oxGas = analysis.concHNO3 ? 'NO2' : ((amt.hno3 || 0) > 0 ? 'NO' : 'SO2');
           emitGas(oxGas, rate * q * 24);
@@ -1043,7 +1157,7 @@ export function stepSimulation(state, dt, speedX = 1) {
         // Гальваническая пара Zn–Cu при добавлении капель соли меди(II) ускоряет выделение H₂ в 2.6 раза!
         const galvanicBoost = (id === 'zn' && ((amt.cuso4 || 0) > 0 || (amt.cucl2 || 0) > 0 || state.coatings.copperPlated > 0.1)) ? 2.6 : 1.0;
         const acidStrength = Math.min(1.6, (-analysis.netEq) * 1.2);
-        const rate = baseR * galvanicBoost * acidStrength * tempFactor * effDt * 2.4;
+        const rate = baseR * galvanicBoost * acidStrength * tempFactor * stirFactor * effDt * 2.4;
         prog[id] = Math.min(1, p + rate);
         emitGas('H2', rate * q * 26);
         if (galvanicBoost > 1.5 && !state.seen.galvanicZnCu) {
@@ -1058,7 +1172,7 @@ export function stepSimulation(state, dt, speedX = 1) {
       // 2в. Амфотерные металлы со щёлочью
       const pAlk = prog[id + ':alk'] || 0;
       if (r.amph && r.baseRate && analysis.netEq > 0.08 && pAlk < 1) {
-        const rate = r.baseRate * tempFactor * effDt * 2.2;
+        const rate = r.baseRate * tempFactor * stirFactor * effDt * 2.2;
         prog[id + ':alk'] = Math.min(1, pAlk + rate);
         emitGas('H2', rate * q * 22);
       }
@@ -1066,7 +1180,7 @@ export function stepSimulation(state, dt, speedX = 1) {
       // 2г. Вытеснение меди из раствора Cu²⁺
       const pDisp = prog[id + ':disp'] || 0;
       if (r.act > 2.5 && r.act < 8 && (analysis.cations.Cu || 0) > 0.04 && pDisp < 1) {
-        const rate = 0.045 * tempFactor * effDt;
+        const rate = 0.045 * tempFactor * stirFactor * effDt;
         prog[id + ':disp'] = Math.min(1, pDisp + rate);
         state.coatings.copperPlated = Math.min(1, prog[id + ':disp']);
         if (prog[id + ':disp'] > 0.25 && !state.seen.displacedCu) {
@@ -1078,7 +1192,7 @@ export function stepSimulation(state, dt, speedX = 1) {
       // 2г-2. Цементация серебра (Cu, Fe, Zn, Mg + AgNO₃ → блестящие дендриты серебра Ag⁰↓)
       const pAg = prog[id + ':ag'] || 0;
       if (r.act > 1.2 && r.act < 8 && (analysis.cations.Ag || 0) > 0.04 && pAg < 1) {
-        const rate = 0.055 * tempFactor * effDt;
+        const rate = 0.055 * tempFactor * stirFactor * effDt;
         prog[id + ':ag'] = Math.min(1, pAg + rate);
         state.coatings.silverPlated = Math.min(1, prog[id + ':ag']);
         if (prog[id + ':ag'] > 0.25 && !state.seen.displacedAg) {
@@ -1090,7 +1204,7 @@ export function stepSimulation(state, dt, speedX = 1) {
 
     // 2д. Мрамор и малахит в кислоте → CO₂
     if (r.solidCarbonate && wet && analysis.netEq < -0.03 && p < 1) {
-      const rate = 0.03 * tempFactor * effDt * 2.2;
+      const rate = 0.03 * tempFactor * stirFactor * effDt * 2.2;
       prog[id] = Math.min(1, p + rate);
       emitGas('CO2', rate * q * 30);
     }
@@ -1098,8 +1212,95 @@ export function stepSimulation(state, dt, speedX = 1) {
     // 2е. Основные оксиды (CuO, MgO) в кислоте
     if (r.basicOxide && wet && analysis.netEq < -0.03 && p < 1) {
       if (!r.minTemp || state.temp >= r.minTemp) {
-        const rate = 0.028 * tempFactor * effDt * 2.0;
+        const rate = 0.028 * tempFactor * stirFactor * effDt * 2.0;
         prog[id] = Math.min(1, p + rate);
+      }
+    }
+  }
+
+  // 2ж. Электролиз водных растворов на инертных графитовых электродах (источник постоянного тока 12 В)
+  if (state.electrolysisOn && wet) {
+    if (!state.elecEffect) {
+      state.elecEffect = { freeI2: 0, freeBr2: 0, ohAdded: 0, hAdded: 0, sColloid: 0, cuReduced: 0, agReduced: 0 };
+    }
+    if (!analysis.isElectrolyte) {
+      state.electrolysisSummary = { cathode: 'нет тока', anode: 'неэлектролит' };
+      if (!state.seen.nonElectrolyteChecked) {
+        state.seen.nonElectrolyteChecked = true;
+        events.push('Электролизёр: ток 0,00 А — жидкость не проводит электрический ток (неэлектролит, свободных ионов нет)');
+      }
+    } else {
+      const elRate = 0.065 * effDt * (1 + analysis.currentAmp * 0.4);
+      let catDesc = '';
+      let anDesc = '';
+      let metalReducedOnCathode = false;
+
+      // Катодный процесс (−): ряд напряжений катионов
+      if ((analysis.cations.Ag || 0) > 0.025) {
+        catDesc = 'Ag⁺ + e⁻ → Ag⁰↓';
+        state.elecEffect.agReduced = (state.elecEffect.agReduced || 0) + elRate * 0.9;
+        state.coatings.silverPlated = Math.min(1, (state.coatings.silverPlated || 0) + elRate * 1.4);
+        metalReducedOnCathode = true;
+      } else if ((analysis.cations.Cu || 0) > 0.025) {
+        catDesc = 'Cu²⁺ + 2e⁻ → Cu⁰↓';
+        state.elecEffect.cuReduced = (state.elecEffect.cuReduced || 0) + elRate * 0.85;
+        state.coatings.copperPlated = Math.min(1, (state.coatings.copperPlated || 0) + elRate * 1.4);
+        metalReducedOnCathode = true;
+      } else if (
+        (analysis.cations.Fe2 || 0) > 0.03 ||
+        (analysis.cations.Zn || 0) > 0.03 ||
+        (analysis.cations.Ni || 0) > 0.03 ||
+        (analysis.cations.Co || 0) > 0.03 ||
+        (analysis.cations.Cr || 0) > 0.03
+      ) {
+        catDesc = 'Meⁿ⁺ + H₂O → Me⁰ + H₂↑';
+        cathodeGas = 'H2';
+        emitGas('H2', elRate * 42);
+        state.coatings.silverPlated = Math.min(0.65, (state.coatings.silverPlated || 0) + elRate * 0.6);
+      } else {
+        catDesc = analysis.netEq < -0.05 ? '2H⁺ + 2e⁻ → H₂↑' : '2H₂O + 2e⁻ → H₂↑ + 2OH⁻';
+        cathodeGas = 'H2';
+        emitGas('H2', elRate * 55);
+      }
+
+      // Анодный процесс (+): бескислородные анионы vs вода
+      let halideOxidizedOnAnode = false;
+      if ((analysis.anions.I || 0) > 0.03) {
+        anDesc = '2I⁻ − 2e⁻ → I₂';
+        state.elecEffect.freeI2 = Math.min(1.2, (state.elecEffect.freeI2 || 0) + elRate * 1.35);
+        halideOxidizedOnAnode = true;
+      } else if ((analysis.anions.Br || 0) > 0.03) {
+        anDesc = '2Br⁻ − 2e⁻ → Br₂';
+        state.elecEffect.freeBr2 = Math.min(1.2, (state.elecEffect.freeBr2 || 0) + elRate * 1.35);
+        halideOxidizedOnAnode = true;
+      } else if ((analysis.anions.Cl || 0) > 0.03) {
+        anDesc = '2Cl⁻ − 2e⁻ → Cl₂↑';
+        anodeGas = 'Cl2';
+        emitGas('Cl2', elRate * 45);
+        state.headspace = { gas: 'Cl2', amount: Math.min(0.85, (state.headspace.amount || 0) + elRate * 1.1) };
+        halideOxidizedOnAnode = true;
+      } else if ((analysis.anions.S || 0) > 0.03) {
+        anDesc = 'S²⁻ − 2e⁻ → S↓';
+        state.elecEffect.sColloid = Math.min(1, (state.elecEffect.sColloid || 0) + elRate * 1.5);
+        halideOxidizedOnAnode = true;
+      } else {
+        anDesc = analysis.netEq > 0.08 ? '4OH⁻ − 4e⁻ → O₂↑ + 2H₂O' : '2H₂O − 4e⁻ → O₂↑ + 4H⁺';
+        anodeGas = 'O2';
+        emitGas('O2', elRate * 36);
+      }
+
+      // Сдвиг pH при электролизе солей:
+      // например KI / NaCl → на катоде H₂ + OH⁻ (щелочная среда!), а CuSO₄ / AgNO₃ → на аноде O₂ + H⁺ (кислая среда!)
+      if (!metalReducedOnCathode && halideOxidizedOnAnode) {
+        state.elecEffect.ohAdded = Math.min(1.4, (state.elecEffect.ohAdded || 0) + elRate * 0.9);
+      } else if (metalReducedOnCathode && !halideOxidizedOnAnode) {
+        state.elecEffect.hAdded = Math.min(1.4, (state.elecEffect.hAdded || 0) + elRate * 0.9);
+      }
+
+      state.electrolysisSummary = { cathode: catDesc, anode: anDesc };
+      if (!state.seen.electrolysis) {
+        state.seen.electrolysis = true;
+        events.push(`Электролиз запущен (I = ${analysis.currentAmp.toFixed(2).replace('.', ',')} А): катод [${catDesc}], анод [${anDesc}]`);
       }
     }
   }
@@ -1143,8 +1344,8 @@ export function stepSimulation(state, dt, speedX = 1) {
       }
     }
 
-    // Нитрит натрия + сильная кислота → распад HNO₂ с выделением бурого газа NO₂ над раствором
-    if ((amt.nano2 || 0) > 0 && hasAnyAcid && analysis.netEq < -0.03 && (prog.no2_dec || 0) < 1) {
+    // Нитрит натрия + сильная кислота (при t ≥ 10 °C; в ледяной бане HNO₂ устойчива!) → распад HNO₂ с выделением бурого NO₂
+    if ((amt.nano2 || 0) > 0 && hasAnyAcid && analysis.netEq < -0.03 && state.temp >= 10 && (prog.no2_dec || 0) < 1) {
       const rate = 0.14 * tempFactor * effDt;
       prog.no2_dec = Math.min(1, (prog.no2_dec || 0) + rate);
       emitGas('NO2', rate * 16);
@@ -1367,14 +1568,18 @@ export function stepSimulation(state, dt, speedX = 1) {
     if (state.headspace.amount < 0.02) state.headspace.gas = '';
   }
 
-  // 7. Выкипание растворителя при кипении (~99–100 °C)
-  const boiling = wet && state.temp >= 98.2 && state.heatLvl > 0;
+  // 7. Выкипание растворителя при кипении (~99–100 °C; в фарфоровой чашке идёт в 3,2 раза быстрее!)
+  const boiling = wet && state.temp >= 98.2 && state.heatLvl > 0 && !state.iceBathOn;
   if (boiling && volume > 0) {
-    state.evapMl = (state.evapMl || 0) + effDt * (0.16 + state.heatLvl * 0.12);
+    state.evapMl = (state.evapMl || 0) + effDt * (0.16 + state.heatLvl * 0.12) * (vInfo.evapFactor || 1.0);
   }
 
-  // 8. Фиксация наблюдений осадков, комплексов и ОВР
+  // 8. Фиксация наблюдений осадков, комплексов, ОВР и кристаллизации при выпаривании досуха
   const postAnalysis = analyzeChemistry(state);
+  if (wet && !postAnalysis.wet && postAnalysis.precipitates.length > 0 && !state.seen.crystallizedSalt) {
+    state.seen.crystallizedSalt = true;
+    events.push(`Выпаривание завершено: вода полностью испарилась, на дне остался кристаллический остаток (${postAnalysis.precipitates[0].formula})`);
+  }
   for (const pr of postAnalysis.precipitates) {
     state.seen.precipitates[pr.formula] = true;
   }
@@ -1392,6 +1597,8 @@ export function stepSimulation(state, dt, speedX = 1) {
     boiling,
     volcanoErupting,
     goldenRainSparkle,
+    cathodeGas,
+    anodeGas,
     analysis: postAnalysis
   };
 }

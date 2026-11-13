@@ -80,9 +80,11 @@
       <!-- Вторая полоса: посуда, отмена/возврат, камера, скорость времени, тема, звук -->
       <div class="toolbar">
         <div class="seg-group" id="vesselGroup" role="group" aria-label="Лабораторная посуда">
-          <button type="button" class="seg-btn active" data-vessel="flask">Колба 100 мл</button>
-          <button type="button" class="seg-btn" data-vessel="tube">Пробирка 25 мл</button>
-          <button type="button" class="seg-btn" data-vessel="beaker">Стакан 200 мл</button>
+          <button type="button" class="seg-btn active" data-vessel="flask" title="Коническая колба Эрленмейера 100 мл">Колба 100 мл</button>
+          <button type="button" class="seg-btn" data-vessel="round" title="Круглодонная реакционная колба 150 мл">Круглодон. 150 мл</button>
+          <button type="button" class="seg-btn" data-vessel="tube" title="Химическая пробирка 25 мл в лапке штатива">Пробирка 25 мл</button>
+          <button type="button" class="seg-btn" data-vessel="beaker" title="Химический стакан 200 мл">Стакан 200 мл</button>
+          <button type="button" class="seg-btn" data-vessel="evap" title="Фарфоровая выпарительная чашка 80 мл (быстрое выпаривание и прокаливание до 525 °C)">Чашка 80 мл</button>
         </div>
 
         <div class="v-divider"></div>
@@ -103,6 +105,7 @@
           <span class="seg-label">Камера</span>
           <button type="button" class="seg-btn active" data-cam="all">Весь стол</button>
           <button type="button" class="seg-btn" data-cam="vessel">Сосуд</button>
+          <button type="button" class="seg-btn" data-cam="equip">Приборы</button>
           <button type="button" class="seg-btn" data-cam="gas">Сбор газа</button>
           <button type="button" class="seg-btn" data-cam="lamp">Горелка</button>
         </div>
@@ -210,11 +213,23 @@
             <b id="gaugeVol">0 / 100 мл</b>
           </div>
           <div class="gauge-row">
+            <span>Масса (весы)</span>
+            <b id="gaugeMass">0,00 г</b>
+          </div>
+          <div class="gauge-row">
+            <span>Проводимость</span>
+            <b id="gaugeCurrent">—</b>
+          </div>
+          <div class="gauge-row" id="gaugeTitrantRow" style="display:none">
+            <span>Бюретка (израсх.)</span>
+            <b id="gaugeTitrant">0,0 мл</b>
+          </div>
+          <div class="gauge-row">
             <span>Собрано газа</span>
             <b id="gaugeGas">0 мл</b>
           </div>
           <div class="gauge-row">
-            <span>Кислотность (pH)</span>
+            <span>pH-метр</span>
             <b id="gaugePh">—</b>
           </div>
           <div class="ph-bar" title="Шкала кислотности pH от 0 до 14">
@@ -238,15 +253,33 @@
           </div>
         </div>
 
-        <!-- Нижняя панель ручных приборов на столе -->
+        <!-- Нижняя панель приборов и установок на столе -->
         <div class="bench-dock" role="toolbar" aria-label="Оборудование стола">
           <button type="button" class="dock-action" id="btnBurner" title="Переключить спиртовку (Выкл → Слабое → Среднее → Сильное пламя)">
             🔥 <span id="burnerBtnText">Спиртовка</span>
           </button>
+          <button type="button" class="dock-action" id="btnIceBath" title="Поместить сосуд в кристаллизатор со льдом (охлаждение до +2 °C)">
+            ❄️ Лёд
+          </button>
+          <button type="button" class="dock-action" id="btnStirrer" title="Включить / выключить магнитную мешалку с фторопластовым якорем">
+            🌪 Мешалка
+          </button>
+          <button type="button" class="dock-action" id="btnBurette" title="Установить / снять титровальную бюретку 25 мл над сосудом">
+            💧 Бюретка
+          </button>
+          <button type="button" class="dock-action drip-btn" id="btnBuretteDrop" style="display:none" title="Открыть кран бюретки и прикапать +1,0 мл выбранного жидкого титранта">
+            +1 мл
+          </button>
+          <button type="button" class="dock-action" id="btnElectrolysis" title="Опустить графитовые электроды и включить источник постоянного тока 12 В">
+            ⚡ Электролиз
+          </button>
+          <button type="button" class="dock-action" id="btnFilter" title="Отфильтровать выпавший осадок через воронку со складчатым бумажным фильтром">
+            ⏳ Фильтр
+          </button>
           <button type="button" class="dock-action" id="btnGasTube" title="Надеть / снять газоотводную трубку для сбора газа вытеснением воды">
             🧪 <span id="tubeBtnText">Трубка</span>
           </button>
-          <button type="button" class="dock-action" id="btnSplint" title="Внести горящую лучину для проверки H₂, O₂ или CO₂">
+          <button type="button" class="dock-action" id="btnSplint" title="Внести горящую лучину для проверки H₂, O₂, C₂H₂, CO₂ или N₂">
             🕯 Лучина
           </button>
           <button type="button" class="dock-action" id="btnFlameLoop" title="Смочить нихромовую петлю в растворе и внести в пламя спиртовки">
@@ -257,9 +290,6 @@
           </button>
           <button type="button" class="dock-action" id="btnSmell" title="Осторожно определить запах по правилам ТБ">
             👃 Запах
-          </button>
-          <button type="button" class="dock-action" id="btnStir" title="Перемешать содержимое сосуда стеклянной палочкой">
-            🥄 Мешать
           </button>
           <button type="button" class="dock-action" id="btnMicro" title="Открыть интерактивную лупу ионов и молекул «Микромир»">
             🔬 Микромир

@@ -151,6 +151,30 @@ export class SoundEngine {
         osc.start(t0);
         osc.stop(t0 + 0.5);
       });
+    } else if (kind === 'drip') {
+      // Капля титранта из крана бюретки
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(640, now);
+      osc.frequency.exponentialRampToValueAtTime(1320, now + 0.085);
+      g.gain.setValueAtTime(0.12, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+      osc.connect(g).connect(this.master);
+      osc.start(now);
+      osc.stop(now + 0.11);
+    } else if (kind === 'switch') {
+      // Щелчок тумблера лабораторного прибора
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(980, now);
+      osc.frequency.exponentialRampToValueAtTime(420, now + 0.035);
+      g.gain.setValueAtTime(0.07, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.045);
+      osc.connect(g).connect(this.master);
+      osc.start(now);
+      osc.stop(now + 0.05);
     }
   }
 

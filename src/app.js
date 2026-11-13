@@ -123,6 +123,10 @@ class ChemLabApp {
       envStateTag: $('envStateTag'),
       gaugeTemp: $('gaugeTemp'),
       gaugeVol: $('gaugeVol'),
+      gaugeMass: $('gaugeMass'),
+      gaugeCurrent: $('gaugeCurrent'),
+      gaugeTitrantRow: $('gaugeTitrantRow'),
+      gaugeTitrant: $('gaugeTitrant'),
       gaugeGas: $('gaugeGas'),
       gaugePh: $('gaugePh'),
       phMarker: $('phMarker'),
@@ -137,13 +141,18 @@ class ChemLabApp {
 
       btnBurner: $('btnBurner'),
       burnerBtnText: $('burnerBtnText'),
+      btnIceBath: $('btnIceBath'),
+      btnStirrer: $('btnStirrer'),
+      btnBurette: $('btnBurette'),
+      btnBuretteDrop: $('btnBuretteDrop'),
+      btnElectrolysis: $('btnElectrolysis'),
+      btnFilter: $('btnFilter'),
       btnGasTube: $('btnGasTube'),
       tubeBtnText: $('tubeBtnText'),
       btnSplint: $('btnSplint'),
       btnFlameLoop: $('btnFlameLoop'),
       btnTongs: $('btnTongs'),
       btnSmell: $('btnSmell'),
-      btnStir: $('btnStir'),
       btnMicro: $('btnMicro'),
 
       reagentTotalBadge: $('reagentTotalBadge'),
@@ -182,6 +191,10 @@ class ChemLabApp {
         else if (action === 'burner') this.toggleBurner();
         else if (action === 'water') this.addReagent('h2o', 5);
         else if (action === 'splint') this.runSplintTest();
+        else if (action === 'buretteDrop') this.runBuretteDrop();
+        else if (action === 'electrolysis') this.toggleElectrolysis();
+        else if (action === 'filter') this.runFiltration();
+        else if (action === 'weigh') this.runWeighCheck();
       },
       onSleepChange: () => this._updateGpuBadge()
     });
@@ -278,14 +291,19 @@ class ChemLabApp {
       this.showToast(task.hint || 'Выберите реактив в правой панели и добавьте его в сосуд.');
     });
 
-    // Приборы на столе
+    // Приборы и лабораторные установки на столе
     this.dom.btnBurner.addEventListener('click', () => this.toggleBurner());
+    this.dom.btnIceBath.addEventListener('click', () => this.toggleIceBath());
+    this.dom.btnStirrer.addEventListener('click', () => this.toggleStirrer());
+    this.dom.btnBurette.addEventListener('click', () => this.toggleBurette());
+    this.dom.btnBuretteDrop.addEventListener('click', () => this.runBuretteDrop());
+    this.dom.btnElectrolysis.addEventListener('click', () => this.toggleElectrolysis());
+    this.dom.btnFilter.addEventListener('click', () => this.runFiltration());
     this.dom.btnGasTube.addEventListener('click', () => this.toggleTube());
     this.dom.btnSplint.addEventListener('click', () => this.runSplintTest());
     this.dom.btnFlameLoop.addEventListener('click', () => this.runFlameLoopTest());
     this.dom.btnTongs.addEventListener('click', () => this.runTongsAction());
     this.dom.btnSmell.addEventListener('click', () => this.runSmellTest());
-    this.dom.btnStir.addEventListener('click', () => this.runStir());
     this.dom.btnMicro.addEventListener('click', () => this.toggleMicro());
     this.dom.btnCloseMicro.addEventListener('click', () => this.toggleMicro(false));
 
@@ -530,20 +548,184 @@ class ChemLabApp {
   toggleBurner() {
     this._pushUndoSnapshot();
     this.labState.heatLvl = (this.labState.heatLvl + 1) % 4;
-    if (this.labState.heatLvl > 0) this.sound.play('ignite');
+    if (this.labState.heatLvl > 0) {
+      this.labState.iceBathOn = false;
+      this.sound.play('ignite');
+    }
     const labels = ['погашена', 'слабое пламя', 'среднее пламя', 'сильное пламя'];
     this._log(`Спиртовка: ${labels[this.labState.heatLvl]}`);
     this._syncAllUI();
   }
 
+  toggleIceBath() {
+    this._pushUndoSnapshot();
+    this.labState.iceBathOn = !this.labState.iceBathOn;
+    if (this.labState.iceBathOn) {
+      this.labState.heatLvl = 0;
+      this.sound.play('clink');
+      this.showToast('❄️ Сосуд помещён в ледяную баню: температура плавно понижается к +2 °C (стабилизация неустойчивых соединений и замедление кинетики)');
+    } else {
+      this.sound.play('clink');
+      this.showToast('Ледяная баня убрана');
+    }
+    this._log(this.labState.iceBathOn ? 'Установлена ледяная баня (0…+2 °C)' : 'Ледяная баня снята');
+    this._syncAllUI();
+  }
+
+  toggleStirrer() {
+    this._pushUndoSnapshot();
+    this.labState.stirrerOn = !this.labState.stirrerOn;
+    this.sound.play('switch');
+    this.scene3d.triggerSplash(0.55);
+    this.showToast(
+      this.labState.stirrerOn
+        ? '🌪 Магнитная мешалка включена: фторопластовый якорь ускоряет растворение и гетерогенные реакции в 1,65 раза'
+        : 'Магнитная мешалка выключена'
+    );
+    this._log(this.labState.stirrerOn ? 'Магнитная мешалка включена' : 'Магнитная мешалка выключена');
+    this._syncAllUI();
+  }
+
+  toggleBurette() {
+    this._pushUndoSnapshot();
+    this.labState.buretteOn = !this.labState.buretteOn;
+    if (this.labState.buretteOn) {
+      this.labState.tubeOn = false;
+      const selR = REAGENTS[this.selectedReagent];
+      if (selR && (selR.state === 'l' || selR.state === 'd')) {
+        this.scene3d.setTitrantColor(selR.color);
+      }
+      this.sound.play('clink');
+      this.showToast('💧 Титровальная бюретка 25 мл закреплена над сосудом. Выберите жидкий титрант и нажимайте «+1 мл» (или кликайте по крану бюретки)!');
+    } else {
+      this.sound.play('clink');
+      this.showToast('Титровальная бюретка отведена');
+    }
+    this._log(this.labState.buretteOn ? 'Закреплена титровальная бюретка 25 мл' : 'Бюретка отведена');
+    this._syncAllUI();
+  }
+
+  runBuretteDrop() {
+    if (!this.labState.buretteOn) {
+      this.toggleBurette();
+      return;
+    }
+    const r = REAGENTS[this.selectedReagent];
+    if (!r || (r.state !== 'l' && r.state !== 'd')) {
+      this.showToast('Для капельного титрования из бюретки выберите раствор кислоты, щёлочи, соли или индикатор в шкафу справа');
+      return;
+    }
+    const vInfo = VESSELS[this.labState.vessel];
+    const preAnalysis = analyzeChemistry(this.labState);
+    if (r.state === 'l' && preAnalysis.volume + 1 > vInfo.cap) {
+      this.showToast(`Сосуд «${vInfo.name}» заполнен до краёв (${vInfo.cap} мл)!`);
+      return;
+    }
+    this._pushUndoSnapshot();
+    const stepQty = 1;
+    this.labState.amt[this.selectedReagent] = (this.labState.amt[this.selectedReagent] || 0) + stepQty;
+    this.labState.addedOrder.push({ id: this.selectedReagent, qty: stepQty, unit: r.state === 'd' ? 'кап.' : 'мл' });
+    this.labState.buretteUsedMl = Math.round(((this.labState.buretteUsedMl || 0) + 1.0) * 10) / 10;
+    this.labState.seen.titrated = true;
+
+    const postAnalysis = analyzeChemistry(this.labState);
+    if ((r.acid && preAnalysis.netEq > 0.02) || (r.base && preAnalysis.netEq < -0.02)) {
+      this.labState.temp = Math.min(95, this.labState.temp + 0.9);
+    }
+
+    this.sound.play('drip');
+    this.scene3d.setTitrantColor(r.color);
+    this.scene3d.triggerBuretteDrop(r.color);
+    const pHTxt = postAnalysis.pH !== null ? ` · pH = ${postAnalysis.pH.toFixed(1).replace('.', ',')}` : '';
+    this.showToast(`💧 Из бюретки прикапано +1,0 мл ${r.formula} (всего израсходовано ${this.labState.buretteUsedMl.toFixed(1).replace('.', ',')} мл${pHTxt})`);
+    this._log(`Титрование из бюретки: +1,0 мл ${r.formula} (расход ${this.labState.buretteUsedMl.toFixed(1).replace('.', ',')} мл${pHTxt})`);
+    this._syncAllUI();
+  }
+
+  toggleElectrolysis() {
+    this._pushUndoSnapshot();
+    this.labState.electrolysisOn = !this.labState.electrolysisOn;
+    if (this.labState.electrolysisOn) {
+      this.labState.tubeOn = false;
+    }
+    this.sound.play('switch');
+    const analysis = analyzeChemistry(this.labState);
+    if (this.labState.electrolysisOn) {
+      if (!analysis.wet) {
+        this.showToast('⚡ Источник постоянного тока 12 В включён, но сосуд сухой (I = 0,00 А). Налейте раствор для проверки электропроводности или электролиза!');
+      } else if (!analysis.isElectrolyte) {
+        this.showToast('⚡ Источник 12 В включён: ток НЕ идёт (I = 0,00 А) — в сосуде неэлектролит (свободные ионы отсутствуют)!');
+      } else {
+        this.showToast(`⚡ Запущен электролиз на графитовых электродах (ток I = ${analysis.currentAmp.toFixed(2).replace('.', ',')} А)! Наблюдайте процессы у катода (−) и анода (+)`);
+      }
+    } else {
+      this.showToast('Источник постоянного тока выключен, электроды подняты');
+    }
+    this._log(this.labState.electrolysisOn ? 'Включён электролизёр DC 12 В (графитовые электроды)' : 'Электролизёр выключен');
+    this._syncAllUI();
+  }
+
+  runFiltration() {
+    const analysis = analyzeChemistry(this.labState);
+    if (!analysis.wet) {
+      this.showToast('Для фильтрования в сосуде должна находиться жидкая смесь (суспензия с осадком или нерастворимым веществом)');
+      return;
+    }
+    // Собираем выпавшие ионные осадки и нерастворимые твёрдые вещества
+    const insolubleIds = Object.entries(this.labState.amt)
+      .filter(([id, q]) => q > 0.04 && REAGENTS[id]?.state === 's' && !(REAGENTS[id]?.waterRate > 0) && !REAGENTS[id]?.soluble)
+      .map(([id]) => id);
+
+    if (analysis.precipitates.length === 0 && insolubleIds.length === 0) {
+      this.showToast('Раствор прозрачен и гомогенен — твёрдого осадка для фильтрования на бумажном фильтре нет');
+      return;
+    }
+
+    this._pushUndoSnapshot();
+    const cakeItems = [];
+    for (const pr of analysis.precipitates) {
+      cakeItems.push({ formula: pr.formula, name: pr.name, color: pr.color });
+    }
+    for (const sid of insolubleIds) {
+      const sr = REAGENTS[sid];
+      cakeItems.push({ formula: sr.formula, name: sr.name, color: sr.color });
+      delete this.labState.amt[sid];
+    }
+
+    this.labState.filteredSolids = [...(this.labState.filteredSolids || []), ...cakeItems];
+    this.labState.filteredOrderLen = this.labState.addedOrder.length;
+    this.labState.seen.filtered = true;
+
+    const cakeColor = cakeItems[0]?.color || '#f8fafc';
+    const formulas = cakeItems.map((c) => c.formula).join(', ');
+    this.sound.play('pour');
+    this.scene3d.triggerFiltration(cakeColor);
+    this.showToast(`⏳ Смесь профильтрована через складчатый бумажный фильтр! На фильтре отделён осадок: ${formulas}; в сосуде — чистый фильтрат.`);
+    this._log(`Фильтрование через воронку с бумажным фильтром: отделён осадок ${formulas}`);
+    this._syncAllUI();
+  }
+
+  runWeighCheck() {
+    const analysis = analyzeChemistry(this.labState);
+    const vInfo = VESSELS[this.labState.vessel];
+    const mStr = (analysis.netMassG || 0).toFixed(2).replace('.', ',');
+    this.sound.play('switch');
+    this.showToast(`⚖️ Электронные лабораторные весы (режим ТАРА скомпенсирован для «${vInfo.name}»): масса нетто содержимого = ${mStr} г`);
+    this._log(`Контрольное взвешивание на электронных весах: масса нетто = ${mStr} г`);
+  }
+
   toggleTube() {
     const vInfo = VESSELS[this.labState.vessel];
     if (!vInfo.allowTube) {
-      this.showToast('На широкий химический стакан пробку с газоотводной трубкой не надевают — выберите колбу или пробирку');
+      this.showToast(`На «${vInfo.name}» пробку с газоотводной трубкой не надевают — выберите коническую/круглодонную колбу или пробирку`);
       return;
     }
     this._pushUndoSnapshot();
     this.labState.tubeOn = !this.labState.tubeOn;
+    if (this.labState.tubeOn) {
+      this.labState.buretteOn = false;
+      this.labState.electrolysisOn = false;
+    }
     this.sound.play('clink');
     this._log(this.labState.tubeOn ? 'Надета пробка с газоотводной трубкой' : 'Газоотводная трубка снята');
     this._syncAllUI();
@@ -758,6 +940,10 @@ class ChemLabApp {
     this.labState = createInitialLabState(P.vessel || 'flask');
     if (P.tubeOn) this.labState.tubeOn = true;
     if (P.heatLvl) this.labState.heatLvl = P.heatLvl;
+    if (P.iceBathOn) this.labState.iceBathOn = true;
+    if (P.stirrerOn) this.labState.stirrerOn = true;
+    if (P.buretteOn) this.labState.buretteOn = true;
+    if (P.electrolysisOn) this.labState.electrolysisOn = true;
     for (const [rid, qty] of P.add || []) {
       this.labState.amt[rid] = (this.labState.amt[rid] || 0) + qty;
       const r = REAGENTS[rid];
@@ -919,6 +1105,9 @@ class ChemLabApp {
     this.dom.selDesc.textContent = r.desc;
 
     const isLiq = r.state === 'l';
+    if (this.scene3d && (r.state === 'l' || r.state === 'd')) {
+      this.scene3d.setTitrantColor(r.color);
+    }
     this.dom.portionRow.style.display = isLiq ? 'flex' : 'none';
     const actionLabel = r.state === 's'
       ? `+ Насыпать порцию (${r.formula})`
@@ -1039,10 +1228,20 @@ class ChemLabApp {
   _syncDynamicUI(analysis) {
     const vInfo = VESSELS[this.labState.vessel];
 
-    // Осадки и покрытия
+    // Осадки, отфильтрованный осадок и покрытия
     const badges = [];
     for (const pr of analysis.precipitates) {
       badges.push(`<div class="precip-badge"><span>↓</span><span><b>${pr.formula}</b> — ${pr.name}</span></div>`);
+    }
+    if (Array.isArray(this.labState.filteredSolids) && this.labState.filteredSolids.length > 0) {
+      const fNames = this.labState.filteredSolids.map((f) => f.formula).join(', ');
+      badges.push(`<div class="precip-badge"><span>⏳</span><span>На бумажном фильтре: <b>${fNames}</b></span></div>`);
+    }
+    if (this.labState.coatings.copperPlated > 0.12) {
+      badges.push(`<div class="precip-badge"><span>⚡</span><span><b>Cu⁰</b> — слой красной меди на катоде (−)</span></div>`);
+    }
+    if (this.labState.coatings.silverPlated > 0.12) {
+      badges.push(`<div class="precip-badge"><span>⚡</span><span><b>Ag⁰</b> — блестящий слой серебра на катоде (−)</span></div>`);
     }
     if (this.labState.coatings.silverMirror > 0.4) {
       badges.push(`<div class="precip-badge"><span>✨</span><span><b>Ag⁰</b> — зеркальный налёт серебра на стекле</span></div>`);
@@ -1055,6 +1254,7 @@ class ChemLabApp {
     // Показания приборов
     const tempStr = this.labState.temp.toFixed(1).replace('.', ',') + ' °C';
     const volStr = `${analysis.volume} / ${vInfo.cap} мл`;
+    const massStr = `${(analysis.netMassG || 0).toFixed(2).replace('.', ',')} г`;
     const totalGas = Math.round(Object.values(this.labState.collectedGas).reduce((a, b) => a + b, 0) * 10) / 10;
     const gasNames = Object.entries(this.labState.collectedGas)
       .filter(([, v]) => v >= 0.5)
@@ -1064,6 +1264,26 @@ class ChemLabApp {
     this.dom.vesselCapBadge.textContent = volStr;
     this.dom.gaugeTemp.textContent = tempStr;
     this.dom.gaugeVol.textContent = volStr;
+    if (this.dom.gaugeMass) this.dom.gaugeMass.textContent = massStr;
+
+    if (this.dom.gaugeCurrent) {
+      if (!analysis.wet) {
+        this.dom.gaugeCurrent.textContent = this.labState.electrolysisOn ? '0,00 А (сухо)' : '—';
+      } else if (this.labState.electrolysisOn) {
+        this.dom.gaugeCurrent.textContent = analysis.isElectrolyte
+          ? `${analysis.currentAmp.toFixed(2).replace('.', ',')} А (ток идёт)`
+          : '0,00 А (неэлектр.)';
+      } else {
+        this.dom.gaugeCurrent.textContent = analysis.isElectrolyte ? 'Электролит' : 'Неэлектролит';
+      }
+    }
+
+    if (this.dom.gaugeTitrantRow && this.dom.gaugeTitrant) {
+      const showBur = !!this.labState.buretteOn || (this.labState.buretteUsedMl || 0) > 0;
+      this.dom.gaugeTitrantRow.style.display = showBur ? 'flex' : 'none';
+      this.dom.gaugeTitrant.textContent = `${(this.labState.buretteUsedMl || 0).toFixed(1).replace('.', ',')} мл`;
+    }
+
     this.dom.gaugeGas.textContent = totalGas > 0 ? `${totalGas} мл (${gasNames})` : '0 мл';
 
     if (analysis.pH !== null) {
@@ -1076,9 +1296,11 @@ class ChemLabApp {
       this.dom.phMarker.style.opacity = '0.3';
     }
 
-    this.dom.envStateTag.textContent = this.lastSimInfo.boiling
-      ? 'Кипение'
-      : (this.lastSimInfo.gasRate > 0.2 ? 'Идёт газ' : 'Норма');
+    this.dom.envStateTag.textContent = this.labState.electrolysisOn && analysis.currentAmp > 0
+      ? 'Электролиз'
+      : (this.lastSimInfo.boiling
+        ? 'Кипение'
+        : (this.labState.iceBathOn ? 'Охлаждение' : (this.lastSimInfo.gasRate > 0.2 ? 'Идёт газ' : 'Норма')));
 
     // Предупреждения ТБ
     this.dom.safetyAlerts.innerHTML = analysis.warnings
@@ -1089,6 +1311,13 @@ class ChemLabApp {
     const burnerLabels = ['Спиртовка', 'Слабое', 'Среднее', 'Сильное'];
     this.dom.burnerBtnText.textContent = burnerLabels[this.labState.heatLvl];
     this.dom.btnBurner.classList.toggle('flame-on', this.labState.heatLvl > 0);
+    this.dom.btnIceBath?.classList.toggle('ice-on', !!this.labState.iceBathOn);
+    this.dom.btnStirrer?.classList.toggle('active', !!this.labState.stirrerOn);
+    this.dom.btnBurette?.classList.toggle('active', !!this.labState.buretteOn);
+    if (this.dom.btnBuretteDrop) {
+      this.dom.btnBuretteDrop.style.display = this.labState.buretteOn ? 'inline-flex' : 'none';
+    }
+    this.dom.btnElectrolysis?.classList.toggle('elec-on', !!this.labState.electrolysisOn);
     this.dom.tubeBtnText.textContent = this.labState.tubeOn ? 'Трубка ✓' : 'Трубка';
     this.dom.btnGasTube.classList.toggle('active', this.labState.tubeOn);
 

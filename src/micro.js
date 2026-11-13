@@ -162,6 +162,36 @@ export function describeMicroState(state, analysis) {
     };
   }
 
+  if (state.electrolysisOn) {
+    if (!analysis.isElectrolyte) {
+      return {
+        title: 'Проверка электропроводности: НЕЭЛЕКТРОЛИТ (I = 0,00 А)',
+        equation: 'Молекулярный раствор (ионная диссоциация отсутствует)',
+        caption: 'В воде или растворе органического вещества (глюкоза, сахароза, этанол, глицерин) почти нет свободных гидратированных ионов — электрическая цепь разомкнута.',
+        mode: 'solution',
+        species: [
+          { label: 'H₂O', color: '#93c5fd', count: 14 },
+          { label: (amt.glucose || 0) > 0 ? 'C₆H₁₂O₆' : ((amt.ethanol || 0) > 0 ? 'C₂H₅OH' : 'Молек.'), color: '#fbbf24', count: 6 }
+        ]
+      };
+    }
+    const sumObj = state.electrolysisSummary;
+    const eqText = sumObj && typeof sumObj === 'object'
+      ? `К(−): ${sumObj.cathode} · А(+): ${sumObj.anode}`
+      : (sumObj || 'Катод (−): восстановление · Анод (+): окисление');
+    return {
+      title: `Электролиз водного раствора (ток I = ${analysis.currentAmp.toFixed(2).replace('.', ',')} А)`,
+      equation: eqText,
+      caption: 'Под действием электрического поля катионы мигрируют к отрицательному катоду (−), а анионы — к положительному графитовому аноду (+).',
+      mode: 'solution',
+      species: [
+        { label: 'Катод (−)', color: '#38bdf8', count: 5 },
+        { label: 'Анод (+)', color: '#34d399', count: 5 },
+        { label: 'e⁻', color: '#fde047', count: 8 }
+      ]
+    };
+  }
+
   if ((state.prog.ester || 0) >= 0.35) {
     return {
       title: 'Реакция этерификации (синтез этилацетата)',

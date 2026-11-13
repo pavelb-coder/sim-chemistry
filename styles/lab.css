@@ -883,6 +883,25 @@ button:focus-visible, input:focus-visible {
   color: #c2410c;
 }
 
+.dock-action.ice-on {
+  background: #ecfeff;
+  border-color: #06b6d4;
+  color: #0e7490;
+}
+
+.dock-action.elec-on {
+  background: #ecfdf5;
+  border-color: #10b981;
+  color: #047857;
+}
+
+.dock-action.drip-btn {
+  background: #eff6ff;
+  border-color: #60a5fa;
+  color: #1d4ed8;
+  padding: 6px 8px;
+}
+
 /* ── Правая колонка: шкаф реактивов ── */
 .reagent-Controls {
   padding: 10px 12px 8px;
