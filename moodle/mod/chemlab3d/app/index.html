@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ХимЛаб 3D — Интерактивная виртуальная лаборатория по химии</title>
+  <meta name="description" content="Интерактивная 3D виртуальная лаборатория по химии: 97 реактивов, 3 стола, смешивание сосудов, синтез квантовых точек и люминофоров, УФ 365 нм, муфельная печь 950 °C, термомешалка и 33 практикума.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="ХимЛаб 3D — Виртуальная химическая лаборатория">
+  <meta property="og:description" content="Проводите опыты в 3D на 3 столах: смешивание нескольких колб и пробирок, синтез квантовых точек CdSe и кристаллофосфоров ZnS:Cu, УФ 365 нм, муфельная печь ПМ-1000, электролиз и титрование.">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='31' fill='%230f172a'/%3E%3Cpath d='M21 41h22l3.8 6.5a2.6 2.6 0 0 1-2.2 3.9H19.4a2.6 2.6 0 0 1-2.2-3.9z' fill='%2310b981'/%3E%3Cpath d='M27 14v12l-10 19.5a3.4 3.4 0 0 0 3 5h24a3.4 3.4 0 0 0 3-5L37 26V14' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M24 14h16' stroke='%23fff' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='29' cy='35' r='2.3' fill='%23fff'/%3E%3Ccircle cx='35.5' cy='30' r='1.7' fill='%2338bdf8'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./styles/lab.css?v=2.3.0">
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Шапка и панель инструментов -->
+    <header class="top-card">
+      <div class="header">
+        <a href="#" class="brand" id="brandReset" title="ХимЛаб 3D — Виртуальная лаборатория">
+          <svg width="28" height="28" viewBox="0 0 64 64" aria-hidden="true">
+            <circle cx="32" cy="32" r="31" fill="#0f172a"/>
+            <path d="M21 41h22l3.8 6.5a2.6 2.6 0 0 1-2.2 3.9H19.4a2.6 2.6 0 0 1-2.2-3.9z" fill="#10b981"/>
+            <path d="M27 14v12l-10 19.5a3.4 3.4 0 0 0 3 5h24a3.4 3.4 0 0 0 3-5L37 26V14" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M24 14h16" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+            <circle cx="29" cy="35" r="2.3" fill="#fff"/>
+            <circle cx="35.5" cy="30" r="1.7" fill="#38bdf8"/>
+          </svg>
+          <span>Хим<em>Лаб</em></span>
+          <small>3D</small>
+        </a>
+
+        <!-- Выбор лабораторной работы -->
+        <div class="task-picker-wrap">
+          <button type="button" class="task-picker-btn" id="btnTaskPicker" aria-haspopup="listbox">
+            <span class="task-num-badge" id="curTaskNum">★</span>
+            <span class="task-picker-title" id="curTaskTitle">Свободный эксперимент</span>
+            <span aria-hidden="true">▾</span>
+          </button>
+          <div class="task-dropdown" id="taskDropdown" role="listbox">
+            <div class="task-dropdown-head" id="taskDropdownHead">Лабораторный практикум · 0 из 16</div>
+            <div id="taskOptionsList"></div>
+          </div>
+        </div>
+
+        <button type="button" class="btn" id="btnPrepTask" style="display:none" title="Автоматически собрать исходные реактивы для демонстрации опыта">
+          ⚡ Заготовка опыта
+        </button>
+
+        <div class="spacer"></div>
+
+        <div class="gpu-pill" id="gpuBadge" title="Интеллектуальный спящий режим 3D-движка экономит заряд батареи в покое">
+          <i></i>
+          <span id="gpuBadgeText">3D Активен</span>
+        </div>
+
+        <div class="progress-pill" title="Сданные лабораторные работы">
+          <span>★</span>
+          <span id="progressText">0 из 16</span>
+        </div>
+
+        <button type="button" class="btn" id="btnSaveJson" title="Сохранить опыт в файл .chemlab.json">
+          💾 <span class="btn-text-hide-md">Сохранить</span>
+        </button>
+        <button type="button" class="btn" id="btnLoadJson" title="Открыть сохранённый файл .chemlab.json">
+          📂 <span class="btn-text-hide-md">Открыть</span>
+        </button>
+        <input type="file" id="fileInputJson" accept=".json,.chemlab" style="display:none">
+
+        <button type="button" class="btn" id="btnOpenPT" title="Периодическая система элементов Д. И. Менделеева">
+          📊 <span class="btn-text-hide-md">Таблица</span>
+        </button>
+        <button type="button" class="btn" id="btnOpenAct" title="Электрохимический ряд напряжений металлов">
+          ⚡ <span class="btn-text-hide-md">Ряд металлов</span>
+        </button>
+        <button type="button" class="btn btn-primary" id="btnOpenReport" title="Сформировать и скачать протокол лабораторной работы со снимком 3D-сцены">
+          📋 Отчёт учителю
+        </button>
+      </div>
+
+      <!-- Вторая полоса: слоты сосудов (смешивание 3 колб/пробирок), посуда, отмена/возврат, камера, скорость, тема, звук -->
+      <div class="toolbar">
+        <div class="seg-group" id="slotGroup" role="group" aria-label="Рабочие сосуды (3 слота)">
+          <span class="seg-label">Сосуды</span>
+          <button type="button" class="seg-btn slot-btn active" data-slot="0" id="slotBtn0" title="Рабочий сосуд ①">①</button>
+          <button type="button" class="seg-btn slot-btn" data-slot="1" id="slotBtn1" title="Рабочий сосуд ② (можно приготовить второй раствор и слить с ①!)">②</button>
+          <button type="button" class="seg-btn slot-btn" data-slot="2" id="slotBtn2" title="Рабочий сосуд ③ (третий сосуд на лабораторной стойке)">③</button>
+        </div>
+
+        <button type="button" class="btn btn-mix-quick" id="btnQuickMix" style="display:none" title="Влить содержимое другого непустого сосуда в текущий рабочий сосуд">
+          🫗 <span id="quickMixLabel">Влить ② → ①</span>
+        </button>
+
+        <div class="v-divider"></div>
+
+        <div class="seg-group" id="vesselGroup" role="group" aria-label="Лабораторная посуда">
+          <button type="button" class="seg-btn active" data-vessel="flask" title="Коническая колба Эрленмейера 100 мл">Колба 100 мл</button>
+          <button type="button" class="seg-btn" data-vessel="round" title="Круглодонная реакционная колба 150 мл">Круглодон. 150 мл</button>
+          <button type="button" class="seg-btn" data-vessel="tube" title="Химическая пробирка 25 мл в лапке штатива">Пробирка 25 мл</button>
+          <button type="button" class="seg-btn" data-vessel="beaker" title="Химический стакан 200 мл">Стакан 200 мл</button>
+          <button type="button" class="seg-btn" data-vessel="evap" title="Фарфоровая выпарительная чашка 80 мл (термостойкая для выпаривания и муфеля)">Чашка 80 мл</button>
+          <button type="button" class="seg-btn" data-vessel="crucible" title="Фарфоровый тигель 40 мл (огнеупорный до 1000 °C — специально для муфельной печи)">Тигель 40 мл</button>
+        </div>
+
+        <div class="v-divider"></div>
+
+        <button type="button" class="btn" id="btnUndo" disabled title="Честная отмена действия со всеми эффектами реакции (Ctrl+Z)">
+          ↶ Отменить
+        </button>
+        <button type="button" class="btn" id="btnRedo" disabled title="Повторить отменённое действие (Ctrl+Y)">
+          ↷
+        </button>
+        <button type="button" class="btn btn-danger" id="btnWash" title="Вылить содержимое и чисто вымыть посуду">
+          🫧 Вымыть
+        </button>
+
+        <div class="v-divider"></div>
+
+        <div class="seg-group" id="cameraGroup" role="group" aria-label="Ракурс 3D-камеры">
+          <span class="seg-label">Камера</span>
+          <button type="button" class="seg-btn active" data-cam="all">Весь стол</button>
+          <button type="button" class="seg-btn" data-cam="vessel">Сосуд</button>
+          <button type="button" class="seg-btn" data-cam="hall" title="Панорама всех трёх лабораторных столов зала">Все 3 стола</button>
+          <button type="button" class="seg-btn" data-cam="gas">Сбор газа</button>
+          <button type="button" class="seg-btn" data-cam="lamp">Нагреватель</button>
+        </div>
+
+        <div class="seg-group" id="speedGroup" role="group" aria-label="Скорость времени">
+          <span class="seg-label">Время</span>
+          <button type="button" class="seg-btn active" data-speed="1">×1</button>
+          <button type="button" class="seg-btn" data-speed="2">×2</button>
+          <button type="button" class="seg-btn" data-speed="4">×4</button>
+        </div>
+
+        <div class="spacer"></div>
+
+        <button type="button" class="btn" id="btnTheme" title="Сменить оформление лабораторного зала">
+          🎨 Окружение
+        </button>
+        <button type="button" class="btn" id="btnSound" title="Включить / выключить процедурный звук">
+          🔊 Звук
+        </button>
+        <button type="button" class="btn" id="btnHint" title="Показать подсказку к текущему опыту">
+          💡 Подсказка
+        </button>
+      </div>
+    </header>
+
+    <!-- Рабочая область -->
+    <main class="workspace">
+      <!-- Левая панель: дерево опыта, шаги работы, уравнения и журнал -->
+      <aside class="side-panel" aria-label="Ход опыта и состав сосуда">
+        <div class="panel-head">
+          <span>🧪 Ход опыта и состав</span>
+          <span id="vesselCapBadge" style="font-size:11.5px;color:var(--muted)">0 / 100 мл</span>
+        </div>
+        <div class="panel-scroll">
+          <!-- Панель работы с несколькими колбами / пробирками и их смешивания -->
+          <div class="sec-box mix-vessels-box" id="vesselMixSection">
+            <div class="sec-title">
+              <span>🫗 Колбы и смешивание</span>
+              <span id="activeSlotBadge" style="color:var(--brand);font-weight:800">Сосуд ①</span>
+            </div>
+            <div id="vesselMixControls" class="vessel-mix-controls"></div>
+          </div>
+
+          <!-- Содержимое сосуда -->
+          <div class="sec-box">
+            <div class="sec-title">
+              <span id="vesselNameLabel">Коническая колба</span>
+              <span id="reagentCountLabel">пусто</span>
+            </div>
+            <div id="vesselContentsList">
+              <div style="font-size:12px;color:var(--muted)">Сосуд пуст. Выберите реактив справа или кликните по колбе на столе.</div>
+            </div>
+            <div id="precipitatesList"></div>
+          </div>
+
+          <!-- Задание и критерии -->
+          <div class="sec-box">
+            <div class="sec-title">
+              <span>Практикум</span>
+              <span id="taskStepsProgress">0 / 1</span>
+            </div>
+            <p class="task-desc" id="taskDescription"></p>
+            <div id="taskStepsList"></div>
+
+            <!-- Конструктор уравнений -->
+            <div id="equationSection" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+              <div class="sec-title">
+                <span>Уравнение реакции</span>
+                <div>
+                  <button type="button" id="btnEqBack" style="border:none;background:none;color:var(--brand);cursor:pointer;font-size:11.5px;font-weight:700">⌫ Стереть</button>
+                  <button type="button" id="btnEqClear" style="border:none;background:none;color:var(--muted);cursor:pointer;font-size:11.5px;font-weight:700">Очистить</button>
+                </div>
+              </div>
+              <div class="eq-display" id="eqDisplay">
+                <span class="eq-placeholder">Нажимайте на частицы ниже…</span>
+              </div>
+              <div class="token-wrap" id="eqTokens"></div>
+            </div>
+
+            <button type="button" class="btn btn-emerald" id="btnCheckTask" style="width:100%;margin-top:8px;display:none">
+              ✓ Проверить и зачесть работу
+            </button>
+          </div>
+
+          <!-- Журнал действий -->
+          <div class="sec-box">
+            <div class="sec-title">
+              <span>Журнал действий</span>
+              <span id="logCountBadge">0</span>
+            </div>
+            <div class="log-list" id="actionLogList">
+              <div style="font-size:12px;color:var(--muted)">Ваши действия будут записываться здесь.</div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Центральная 3D-сцена -->
+      <section class="stage-card" id="stageDropZone" aria-label="Интерактивный 3D лабораторный стол">
+        <div class="stage-canvas-host" id="stage3d"></div>
+
+        <!-- Перемещение между лабораторными столами (Стол 3 ← Стол 1 → Стол 2) -->
+        <nav class="bench-switcher" id="benchSwitcher" aria-label="Перемещение между лабораторными столами">
+          <button type="button" class="bench-step-arrow" id="btnBenchPrev" title="Перейти на соседний стол слева вместе с сосудом (клавиша [ )">◀</button>
+          <button type="button" class="bench-tab" data-bench="3" title="Стол 3 (слева): Муфельная печь ПМ-1000 (до 950 °C) и электролизёр DC 12 В">
+            <span>🧱 Стол 3</span>
+            <small>Муфель · Ток</small>
+          </button>
+          <button type="button" class="bench-tab active" data-bench="1" title="Стол 1 (центр): Спиртовка, штатив Бунзена и газометр вытеснения воды">
+            <span>🔥 Стол 1</span>
+            <small>Горелка · Газы</small>
+          </button>
+          <button type="button" class="bench-tab" data-bench="2" title="Стол 2 (справа): Магнитная мешалка с подогревом, весы, бюретка и фильтрование">
+            <span>🧲 Стол 2</span>
+            <small>Термомешалка</small>
+          </button>
+          <button type="button" class="bench-step-arrow" id="btnBenchNext" title="Перейти на соседний стол справа вместе с сосудом (клавиша ] )">▶</button>
+        </nav>
+
+        <!-- Боковые кнопки быстрого перехода к соседнему столу -->
+        <button type="button" class="stage-walk-btn left" id="btnWalkLeft" title="Перенести сосуд на соседний стол слева">
+          ◀ <span id="walkLeftLabel">Стол 3</span>
+        </button>
+        <button type="button" class="stage-walk-btn right" id="btnWalkRight" title="Перенести сосуд на соседний стол справа">
+          <span id="walkRightLabel">Стол 2</span> ▶
+        </button>
+
+        <!-- Показания приборов -->
+        <div class="gauges-card">
+          <div class="gauges-head">
+            <span>Показания приборов</span>
+            <span id="envStateTag">Норма</span>
+          </div>
+          <div class="gauge-row">
+            <span>Температура</span>
+            <b id="gaugeTemp">22,0 °C</b>
+          </div>
+          <div class="gauge-row">
+            <span>Объём жидк.</span>
+            <b id="gaugeVol">0 / 100 мл</b>
+          </div>
+          <div class="gauge-row">
+            <span>Масса (весы)</span>
+            <b id="gaugeMass">0,00 г</b>
+          </div>
+          <div class="gauge-row">
+            <span>Проводимость</span>
+            <b id="gaugeCurrent">—</b>
+          </div>
+          <div class="gauge-row" id="gaugeTitrantRow" style="display:none">
+            <span>Бюретка (израсх.)</span>
+            <b id="gaugeTitrant">0,0 мл</b>
+          </div>
+          <div class="gauge-row">
+            <span>Собрано газа</span>
+            <b id="gaugeGas">0 мл</b>
+          </div>
+          <div class="gauge-row" id="gaugeLumRow" style="display:none">
+            <span>Люминесценция</span>
+            <b id="gaugeLum">—</b>
+          </div>
+          <div class="gauge-row">
+            <span>pH-метр</span>
+            <b id="gaugePh">—</b>
+          </div>
+          <div class="ph-bar" title="Шкала кислотности pH от 0 до 14">
+            <div class="ph-marker" id="phMarker" style="left:50%"></div>
+          </div>
+        </div>
+
+        <!-- Предупреждения ТБ -->
+        <div class="stage-alerts" id="safetyAlerts"></div>
+
+        <!-- Оверлей «Микромир» -->
+        <div class="micro-overlay" id="microOverlay">
+          <canvas class="micro-canvas" id="microCanvas" width="250" height="250"></canvas>
+          <div class="micro-card">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+              <h4 id="microTitle">Микромир раствора</h4>
+              <button type="button" id="btnCloseMicro" style="border:none;background:none;color:#94a3b8;cursor:pointer;font-size:16px;line-height:1" title="Закрыть лупу">✕</button>
+            </div>
+            <div class="micro-eq" id="microEq">H₂O ⇄ H⁺ + OH⁻</div>
+            <p id="microCaption"></p>
+          </div>
+        </div>
+
+        <!-- Нижняя панель приборов и установок на столе -->
+        <div class="bench-dock" role="toolbar" aria-label="Оборудование стола">
+          <button type="button" class="dock-action" id="btnBurner" title="Спиртовка на Столе 1 (Выкл → Слабое → Среднее → Сильное пламя)">
+            🔥 <span id="burnerBtnText">Спиртовка</span>
+          </button>
+          <button type="button" class="dock-action" id="btnHotplate" title="Нагрев магнитной мешалки на Столе 2 (Выкл → 60 °C → 125 °C → 260 °C)">
+            🌡️ <span id="hotplateBtnText">Плитка</span>
+          </button>
+          <button type="button" class="dock-action" id="btnMuffle" title="Муфельная печь ПМ-1000 на Столе 3 (Выкл → 600 °C → 950 °C)">
+            🧱 <span id="muffleBtnText">Муфель</span>
+          </button>
+          <button type="button" class="dock-action" id="btnIceBath" title="Поместить сосуд в кристаллизатор со льдом (охлаждение до +2 °C)">
+            ❄️ Лёд
+          </button>
+          <button type="button" class="dock-action" id="btnStirrer" title="Включить / выключить магнитную мешалку (600 об/мин — с подогревом на Столе 2)">
+            🧲 Мешалка
+          </button>
+          <button type="button" class="dock-action" id="btnBurette" title="Установить / снять титровальную бюретку 25 мл над сосудом">
+            💧 Бюретка
+          </button>
+          <button type="button" class="dock-action drip-btn" id="btnBuretteDrop" style="display:none" title="Открыть кран бюретки и прикапать +1,0 мл выбранного жидкого титранта">
+            +1 мл
+          </button>
+          <button type="button" class="dock-action" id="btnElectrolysis" title="Опустить графитовые электроды в текущий сосуд и включить источник тока 12 В">
+            ⚡ Электролиз
+          </button>
+          <button type="button" class="dock-action" id="btnUvLamp" title="Лабораторная УФ-лампа Вуда (365 нм) — возбуждение квантовых точек и кристаллофосфоров (клавиша U)">
+            🔦 <span id="uvBtnText">УФ 365 нм</span>
+          </button>
+          <button type="button" class="dock-action" id="btnFilter" title="Отфильтровать выпавший осадок через воронку со складчатым бумажным фильтром">
+            ⏳ Фильтр
+          </button>
+          <button type="button" class="dock-action" id="btnGasTube" title="Надеть / снять газоотводную трубку для сбора газа вытеснением воды">
+            🧪 <span id="tubeBtnText">Трубка</span>
+          </button>
+          <button type="button" class="dock-action" id="btnSplint" title="Внести горящую лучину для проверки H₂, O₂, C₂H₂, CO₂ или N₂">
+            🕯 Лучина
+          </button>
+          <button type="button" class="dock-action" id="btnFlameLoop" title="Смочить нихромовую петлю в растворе и внести в пламя спиртовки">
+            ➰ Пламя
+          </button>
+          <button type="button" class="dock-action" id="btnTongs" title="Взять выбранный образец (Mg, Fe, Cu, S) тигельными щипцами и внести в пламя">
+            🗜 Щипцы
+          </button>
+          <button type="button" class="dock-action" id="btnSmell" title="Осторожно определить запах по правилам ТБ">
+            👃 Запах
+          </button>
+          <button type="button" class="dock-action" id="btnMicro" title="Открыть интерактивную лупу ионов и молекул «Микромир»">
+            🔬 Микромир
+          </button>
+        </div>
+      </section>
+
+      <!-- Правая панель: библиотека реактивов -->
+      <aside class="side-panel" aria-label="Шкаф реактивов">
+        <div class="panel-head">
+          <span>🧴 Шкаф реактивов</span>
+          <span id="reagentTotalBadge" style="font-size:11.5px;color:var(--muted)">62 в-ва</span>
+        </div>
+
+        <div class="reagent-Controls">
+          <input type="search" class="search-input" id="reagentSearch" placeholder="Поиск по формуле или названию (HCl, медь, сода)…">
+          <div class="cat-pills" id="catPills"></div>
+        </div>
+
+        <!-- Карточка выбранного реактива -->
+        <div class="selected-reagent-card" id="selectedReagentBox">
+          <div class="sel-top-row">
+            <div class="sel-icon-box" id="selIconBox" aria-hidden="true"></div>
+            <div class="sel-title-col">
+              <div class="sel-head">
+                <span class="sel-formula" id="selFormula">HCl</span>
+                <span class="sel-hazard" id="selHazard">едкое</span>
+              </div>
+              <div class="sel-name" id="selName">Соляная кислота (разбавл. 10 %)</div>
+            </div>
+          </div>
+          <p class="sel-desc" id="selDesc"></p>
+
+          <div class="portion-row" id="portionRow">
+            <span>Доза: <b id="portionValLabel">10 мл</b></span>
+            <input type="range" id="portionSlider" min="5" max="40" step="5" value="10">
+          </div>
+
+          <button type="button" class="btn btn-primary" id="btnAddSelected" style="width:100%">
+            + Добавить в сосуд
+          </button>
+        </div>
+
+        <!-- Сетка склянок -->
+        <div class="reagent-grid" id="reagentGrid"></div>
+      </aside>
+    </main>
+  </div>
+
+  <!-- Всплывающий тост -->
+  <div class="toast" id="toastBox" role="status" aria-live="polite"></div>
+
+  <!-- Модалка: Таблица Менделеева -->
+  <div class="modal-backdrop" id="modalPT" aria-hidden="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>Периодическая система химических элементов Д. И. Менделеева</h3>
+        <button type="button" class="btn" data-close="modalPT">✕ Закрыть</button>
+      </div>
+      <div class="modal-body">
+        <div id="ptSelectedInfo" style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--panel-soft);border:1px solid var(--line);border-radius:12px;margin-bottom:12px;font-size:13.5px"></div>
+        <div style="overflow-x:auto">
+          <div class="pt-grid" id="ptGrid"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модалка: Ряд активности металлов -->
+  <div class="modal-backdrop" id="modalAct" aria-hidden="true">
+    <div class="modal-card" style="max-width:780px">
+      <div class="modal-head">
+        <h3>Электрохимический ряд напряжений металлов</h3>
+        <button type="button" class="btn" data-close="modalAct">✕ Закрыть</button>
+      </div>
+      <div class="modal-body">
+        <p style="margin:0 0 8px;font-size:13.5px;color:var(--ink-2)">
+          Чем левее расположен металл, тем сильнее его восстановительные свойства: металлы левее <b>H₂</b> вытесняют водород из неокисляющих кислот, а каждый более активный металл вытесняет менее активные из растворов их солей.
+        </p>
+        <div class="act-row" id="actSeriesRow"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модалка: Отчёт для учителя -->
+  <div class="modal-backdrop" id="modalReport" aria-hidden="true">
+    <div class="modal-card" style="max-width:620px">
+      <div class="modal-head">
+        <h3>📋 Лабораторный отчёт для учителя</h3>
+        <button type="button" class="btn" data-close="modalReport">✕ Закрыть</button>
+      </div>
+      <div class="modal-body">
+        <p style="margin:0 0 14px;font-size:13.5px;color:var(--ink-2)">
+          В отличие от муляжных кнопок без сервера, «ХимЛаб 3D» формирует полноценный верифицируемый документ отчёта со списком сданных работ, уравнениями, журналом опыта и живым 3D-снимком вашего лабораторного стола.
+        </p>
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="repStudentName">Фамилия и имя ученика</label>
+            <input type="text" id="repStudentName" placeholder="Например: Иванов Алексей">
+          </div>
+          <div class="form-field">
+            <label for="repStudentClass">Класс / Группа</label>
+            <input type="text" id="repStudentClass" placeholder="Например: 9 «Б»">
+          </div>
+        </div>
+        <div id="repSummaryBox" style="padding:12px;border-radius:12px;background:var(--panel-soft);border:1px solid var(--line);font-size:13px;margin-bottom:16px"></div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap">
+          <button type="button" class="btn" id="btnPrintReport">🖨 Открыть и распечатать (PDF)</button>
+          <button type="button" class="btn btn-primary" id="btnDownloadReport">⬇ Скачать файл отчёта (.html)</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./src/app.js?v=2.3.0"></script>
+</body>
+</html>

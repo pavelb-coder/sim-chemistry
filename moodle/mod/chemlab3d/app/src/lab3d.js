@@ -1,0 +1,3928 @@
+import * as THREE from '../vendor/three.module.min.js';
+import { REAGENTS } from './reagents.js?v=2.3.0';
+import { VESSELS, BENCHES } from './chemistry.js?v=2.3.0';
+
+const CAMERA_PRESETS = {
+  all:    { pos: [0.10, 2.42, 6.85], target: [0.05, 1.25, 0], fov: 35 },
+  vessel: { pos: [-0.35, 2.08, 4.05], target: [-0.35, 1.55, 0], fov: 29 },
+  hall:   { pos: [0.0, 3.65, 16.4], target: [0.0, 1.05, 0], fov: 41 },
+  gas:    { pos: [1.05, 2.0, 4.65], target: [0.95, 1.38, 0], fov: 32 },
+  lamp:   { pos: [-0.35, 1.25, 3.65], target: [-0.35, 0.92, 0], fov: 30 }
+};
+
+const BENCH_THEMES = {
+  classic: {
+    name: 'Светлая плитка',
+    bg: '#dce8f2',
+    tileBase: '#e4f0ec',
+    tileAlt: '#d8e8e2',
+    grout: '#a7c4bc',
+    bench: '#f1f5f9'
+  },
+  slate: {
+    name: 'Тёмный графит',
+    bg: '#0f172a',
+    tileBase: '#1e293b',
+    tileAlt: '#172033',
+    grout: '#334155',
+    bench: '#cbd5e1'
+  },
+  warm: {
+    name: 'Тёплая аудитория',
+    bg: '#efe8dc',
+    tileBase: '#f5efe6',
+    tileAlt: '#ebe2d5',
+    grout: '#cbbba6',
+    bench: '#e7dfd3'
+  }
+};
+
+export class Lab3DScene {
+  constructor(container, callbacks = {}) {
+    this.container = container;
+    this.callbacks = callbacks;
+    this.webglSupported = true;
+    this.sleeping = false;
+    this.awakeUntil = performance.now() + 3000;
+    this.themeId = 'classic';
+    this.presetId = 'all';
+
+    // Относительные координаты вокруг ключевого узла: сосуд стоит в X = -0.35
+    this.vesselX = -0.35;
+    this.vesselBaseY = 1.18;
+
+    this.camSpherical = { yaw: 0, pitch: 0, zoom: 1 };
+    this.camTargetCur = new THREE.Vector3(0.35, 1.45, 0);
+    this.camPosCur = new THREE.Vector3(0.4, 2.35, 6.6);
+
+    // Физика живой жидкости, горения и частиц
+    this.slosh = { angle: 0, vel: 0 };
+    this.bubbles = [];
+    this.flakes = [];
+    this.steamClouds = [];
+    this.sparks = [];
+    this.troughBubbles = [];
+    this.ripples = [];
+    this.emberHeat = 0;
+    this.gauzeHeat = 0;
+    this.prevHeatLvl = 0;
+    this.pourAnim = { active: false, t: 0, dur: 1.0, color: '#cfe8f7', solid: false, formula: '' };
+    this.dripAnim = { active: false, t: 0, dur: 0.55, color: '#dff2fc' };
+    this.filterAnim = { active: false, t: 0, dur: 2.1, cakeColor: '#f8fafc' };
+    this.transferAnim = {
+      active: false,
+      t: 0,
+      dur: 0.78,
+      from: new THREE.Vector3(-0.35, 1.18, 0),
+      to: new THREE.Vector3(-0.35, 1.18, 0)
+    };
+    this.curVesselPos = new THREE.Vector3(-0.35, 1.18, 0);
+    this.muffleDoorAngle = 0;
+    this.muffleGlow = 0;
+    this.hotplateGlow = 0;
+    this.uvLampOn = false;
+    this.uvMix = 0;
+    this.baseBgColor = new THREE.Color('#dce8f2');
+    this.vesselPourAnim = {
+      active: false,
+      t: 0,
+      dur: 1.15,
+      vesselKind: 'tube',
+      color: '#dff2fc',
+      glowColor: ''
+    };
+    this._prevSync = {
+      vessel: '',
+      bench: 1,
+      muffleActive: false,
+      elecKey: '',
+      prCount: 0,
+      activeSlot: 0
+    };
+    this.auxSlotsData = [];
+    this.titrantColor = '#dff2fc';
+    this.lastMassKey = '';
+    this.lastPsuKey = '';
+    this.lastHotplateKey = '';
+    this.lastMuffleKey = '';
+    this.iceCubes = [];
+    this.toolAnim = { kind: '', t: 0, dur: 0, extra: {}, burstDone: false };
+    this.flameTint = { color: '', until: 0 };
+    this.flashEffect = { intensity: 0, color: '#ffffff' };
+
+    this.lastState = null;
+    this.lastAnalysis = null;
+    this.lastSimInfo = { activeGases: [], gasRate: 0, boiling: false };
+
+    this._init();
+  }
+
+  _init() {
+    const canvas = document.createElement('canvas');
+    canvas.className = 'lab3d-canvas';
+    this.container.appendChild(canvas);
+    this.canvas = canvas;
+
+    // Плашка-подсказка при наведении на 3D-объекты стола
+    const tip = document.createElement('div');
+    tip.className = 'lab3d-tip';
+    this.container.appendChild(tip);
+    this.tipEl = tip;
+
+    let gl = null;
+    try {
+      gl = canvas.getContext('webgl2', { antialias: true, preserveDrawingBuffer: false }) ||
+           canvas.getContext('webgl', { antialias: true, preserveDrawingBuffer: false });
+    } catch (e) {
+      gl = null;
+    }
+
+    if (!gl) {
+      this.webglSupported = false;
+      this._renderFallbackBanner();
+      return;
+    }
+
+    const R = new THREE.WebGLRenderer({
+      canvas,
+      context: gl,
+      antialias: true,
+      powerPreference: 'high-performance'
+    });
+    R.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    R.outputColorSpace = THREE.SRGBColorSpace;
+    R.toneMapping = THREE.ACESFilmicToneMapping;
+    R.toneMappingExposure = 1.04;
+    R.shadowMap.enabled = true;
+    R.shadowMap.type = THREE.PCFSoftShadowMap;
+    R.localClippingEnabled = true;
+    this.renderer = R;
+
+    this.scene = new THREE.Scene();
+    this.camera = new THREE.PerspectiveCamera(34, 16 / 9, 0.1, 40);
+
+    this._buildEnvironment();
+    this._buildLights();
+    this._buildRoomAndBench();
+    this._buildStandAndBurner();
+    this._buildVessels();
+    this._buildGasCollector();
+    this._buildWashBottle();
+    this._buildLabEquipment();
+    this._buildAnimatedProps();
+    this._buildParticles();
+    this._bindInteractions();
+
+    this.setBenchTheme(this.themeId);
+    this.resize();
+
+    this.lastTs = performance.now();
+    this._tick(this.lastTs);
+  }
+
+  _renderFallbackBanner() {
+    const msg = document.createElement('div');
+    msg.className = 'webgl-fallback';
+    msg.innerHTML = `
+      <div class="webgl-fallback-card">
+        <b>Режим без аппаратного 3D (WebGL отключён в браузере)</b>
+        <p>Физико-химическая симуляция, приборы, «Микромир», уравнения и лабораторный журнал полностью работают.</p>
+      </div>`;
+    this.container.appendChild(msg);
+  }
+
+  _buildEnvironment() {
+    const envScene = new THREE.Scene();
+    const room = new THREE.Mesh(
+      new THREE.BoxGeometry(16, 10, 16),
+      new THREE.MeshBasicMaterial({ color: '#cbd5e1', side: THREE.BackSide })
+    );
+    envScene.add(room);
+
+    const addPanel = (w, h, x, y, z, rx, ry, col) => {
+      const m = new THREE.Mesh(
+        new THREE.PlaneGeometry(w, h),
+        new THREE.MeshBasicMaterial({ color: col, side: THREE.DoubleSide })
+      );
+      m.position.set(x, y, z);
+      m.rotation.set(rx, ry, 0);
+      envScene.add(m);
+    };
+    // Окно слева и световые панели на потолке для реалистичных бликов на стекле
+    addPanel(5, 6, -7.8, 1.5, 2.0, 0, Math.PI / 2, '#ffffff');
+    addPanel(6, 1.6, 0, 4.8, 1.5, Math.PI / 2, 0, '#fffbeb');
+    addPanel(6, 1.6, 0, 4.8, -2.2, Math.PI / 2, 0, '#f0f9ff');
+
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(envScene, 0.03).texture;
+    pmrem.dispose();
+  }
+
+  _buildLights() {
+    this.hemiLight = new THREE.HemisphereLight('#ffffff', '#94a3b8', 0.95);
+    this.scene.add(this.hemiLight);
+
+    const dir = new THREE.DirectionalLight('#fffaf0', 1.45);
+    dir.position.set(-2.8, 6.2, 5.4);
+    dir.castShadow = true;
+    dir.shadow.mapSize.set(2048, 1024);
+    dir.shadow.camera.near = 1;
+    dir.shadow.camera.far = 20;
+    dir.shadow.camera.left = -8.5;
+    dir.shadow.camera.right = 8.5;
+    dir.shadow.camera.top = 4.5;
+    dir.shadow.camera.bottom = -2.5;
+    dir.shadow.bias = -0.0005;
+    this.scene.add(dir);
+    this.dirLight = dir;
+
+    this.flameLight = new THREE.PointLight('#ff9e44', 0, 4.5, 1.6);
+    this.flameLight.position.set(this.vesselX, 0.95, 0.2);
+    this.scene.add(this.flameLight);
+
+    this.muffleLight = new THREE.PointLight('#ff5d00', 0, 4.2, 1.4);
+    this.muffleLight.position.set(-4.85, 0.85, -0.15);
+    this.scene.add(this.muffleLight);
+
+    this.uvLight = new THREE.PointLight('#7c3aed', 0, 7.5, 1.35);
+    this.uvLight.position.set(this.vesselX, 2.35, 0.35);
+    this.scene.add(this.uvLight);
+
+    this.lumLight = new THREE.PointLight('#22ff66', 0, 4.8, 1.5);
+    this.lumLight.position.set(this.vesselX, 1.45, 0.25);
+    this.scene.add(this.lumLight);
+
+    this.flashLight = new THREE.PointLight('#ffffff', 0, 7.0, 1.3);
+    this.flashLight.position.set(this.vesselX, 1.85, 0.4);
+    this.scene.add(this.flashLight);
+  }
+
+  _buildRoomAndBench() {
+    this.interactables = [];
+
+    this.wallMat = new THREE.MeshStandardMaterial({ roughness: 0.48, metalness: 0.02 });
+    const wall = new THREE.Mesh(new THREE.PlaneGeometry(32, 9.5), this.wallMat);
+    wall.position.set(0, 3.2, -1.62);
+    wall.receiveShadow = true;
+    this.scene.add(wall);
+
+    // Пол зала между тремя лабораторными столами
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(32, 10),
+      new THREE.MeshStandardMaterial({ color: '#cbd5e1', roughness: 0.78 })
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(0, -2.54, 1.2);
+    floor.receiveShadow = true;
+    this.scene.add(floor);
+
+    // Столешница лабораторных столов (обновляется при смене темы)
+    this.benchMat = new THREE.MeshStandardMaterial({
+      color: '#f1f5f9',
+      roughness: 0.32,
+      metalness: 0.04
+    });
+
+    const trimColors = { 1: '#2563eb', 2: '#059669', 3: '#ea580c' };
+    const benchSpecs = [
+      { id: 3, x: -5.0, title: 'СТОЛ 3 · МУФЕЛЬНАЯ ПЕЧЬ И ТОК', tip: 'Стол 3 (Муфельная печь до 950 °C и электролиз): нажмите, чтобы перенести сосуд сюда' },
+      { id: 1, x: 0.0,  title: 'СТОЛ 1 · ГОРЕЛКА И ГАЗЫ',       tip: 'Стол 1 (Спиртовка, синтез и сбор газов): нажмите, чтобы перенести сосуд сюда' },
+      { id: 2, x: 5.0,  title: 'СТОЛ 2 · МЕШАЛКА-ПЛИТКА',       tip: 'Стол 2 (Магнитная мешалка с подогревом, бюретка, фильтр и весы): нажмите, чтобы перенести сосуд сюда' }
+    ];
+
+    for (const bs of benchSpecs) {
+      const grp = new THREE.Group();
+      grp.position.set(bs.x, 0, 0);
+
+      const benchTop = new THREE.Mesh(new THREE.BoxGeometry(4.45, 0.14, 3.55), this.benchMat);
+      benchTop.position.set(0, -0.07, 0.15);
+      benchTop.receiveShadow = true;
+      grp.add(benchTop);
+
+      // Передний цветной кант-маркер стола + табличка номера стола
+      const trim = new THREE.Mesh(
+        new THREE.BoxGeometry(4.45, 0.055, 0.065),
+        new THREE.MeshStandardMaterial({ color: trimColors[bs.id], roughness: 0.4, metalness: 0.25 })
+      );
+      trim.position.set(0, -0.03, 1.94);
+      grp.add(trim);
+
+      const badgeCanvas = document.createElement('canvas');
+      badgeCanvas.width = 512;
+      badgeCanvas.height = 64;
+      const bCtx = badgeCanvas.getContext('2d');
+      bCtx.fillStyle = '#0f172a';
+      bCtx.fillRect(0, 0, 512, 64);
+      bCtx.fillStyle = '#f8fafc';
+      bCtx.font = '800 24px system-ui, sans-serif';
+      bCtx.textAlign = 'center';
+      bCtx.textBaseline = 'middle';
+      bCtx.fillText(bs.title, 256, 33);
+      const badgeTex = new THREE.CanvasTexture(badgeCanvas);
+      badgeTex.colorSpace = THREE.SRGBColorSpace;
+      const badgePlate = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.55, 0.19),
+        new THREE.MeshBasicMaterial({ map: badgeTex })
+      );
+      badgePlate.position.set(0, 2.55, -1.60);
+      grp.add(badgePlate);
+
+      const cabinet = new THREE.Mesh(
+        new THREE.BoxGeometry(4.25, 2.4, 3.25),
+        new THREE.MeshStandardMaterial({ color: '#e2e8f0', roughness: 0.65 })
+      );
+      cabinet.position.set(0, -1.34, 0.02);
+      grp.add(cabinet);
+
+      // Хитбокс столешницы для переноса сосуда кликом по соседнему столу
+      const benchHit = new THREE.Mesh(
+        new THREE.BoxGeometry(4.4, 0.18, 3.5),
+        new THREE.MeshBasicMaterial({ visible: false })
+      );
+      benchHit.position.set(0, -0.06, 0.15);
+      benchHit.userData = { action: `bench:${bs.id}`, tip: bs.tip };
+      this.interactables.push(benchHit);
+      grp.add(benchHit);
+
+      this.scene.add(grp);
+    }
+  }
+
+  _buildStandAndBurner() {
+    const darkMetal = new THREE.MeshStandardMaterial({ color: '#334155', metalness: 0.72, roughness: 0.42 });
+    const chrome = new THREE.MeshStandardMaterial({ color: '#cbd5e1', metalness: 0.92, roughness: 0.22 });
+    const brass = new THREE.MeshStandardMaterial({ color: '#d97706', metalness: 0.85, roughness: 0.28 });
+
+    // 1. Треножник с сеткой (для колбы и стакана)
+    this.tripodGroup = new THREE.Group();
+    this.tripodGroup.position.set(this.vesselX, 0, 0);
+
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.56, 0.032, 14, 40), darkMetal);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = this.vesselBaseY - 0.02;
+    ring.castShadow = true;
+    this.tripodGroup.add(ring);
+
+    // Асбестовая / керамическая рассекательная сетка + пятно накала от пламени
+    const gauze = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.53, 0.53, 0.012, 32),
+      new THREE.MeshStandardMaterial({ color: '#cbd5e1', roughness: 0.85, metalness: 0.25, transparent: true, opacity: 0.84 })
+    );
+    gauze.position.y = this.vesselBaseY - 0.01;
+    gauze.receiveShadow = true;
+    this.tripodGroup.add(gauze);
+
+    this.gauzeGlowMat = new THREE.MeshBasicMaterial({
+      map: this._createHotSpotTexture(),
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    const gauzeGlow = new THREE.Mesh(new THREE.PlaneGeometry(0.68, 0.68), this.gauzeGlowMat);
+    gauzeGlow.rotation.x = -Math.PI / 2;
+    gauzeGlow.position.y = this.vesselBaseY - 0.002;
+    this.tripodGroup.add(gauzeGlow);
+
+    for (let i = 0; i < 3; i++) {
+      const ang = (i * Math.PI * 2) / 3 + 0.4;
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, 1.22, 10), darkMetal);
+      leg.position.set(Math.cos(ang) * 0.58, 0.58, Math.sin(ang) * 0.58);
+      leg.rotation.z = Math.cos(ang) * 0.14;
+      leg.rotation.x = -Math.sin(ang) * 0.14;
+      leg.castShadow = true;
+      this.tripodGroup.add(leg);
+    }
+    this.scene.add(this.tripodGroup);
+
+    // 2. Лабораторный штатив с лапкой (для пробирки)
+    this.retortGroup = new THREE.Group();
+    this.retortGroup.position.set(this.vesselX, 0, 0);
+    const basePlate = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.05, 0.65), darkMetal);
+    basePlate.position.set(-0.68, 0.025, -0.15);
+    basePlate.castShadow = true;
+    basePlate.receiveShadow = true;
+    this.retortGroup.add(basePlate);
+
+    const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 2.75, 14), chrome);
+    rod.position.set(-0.88, 1.4, -0.15);
+    rod.castShadow = true;
+    this.retortGroup.add(rod);
+
+    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.9, 12), chrome);
+    arm.rotation.z = Math.PI / 2;
+    arm.position.set(-0.44, 2.15, -0.06);
+    this.retortGroup.add(arm);
+
+    const clamp = new THREE.Mesh(new THREE.TorusGeometry(0.205, 0.022, 10, 26, Math.PI * 1.65), darkMetal);
+    clamp.rotation.x = Math.PI / 2;
+    clamp.rotation.z = 0.4;
+    clamp.position.set(0, 2.15, 0);
+    this.retortGroup.add(clamp);
+    this.retortGroup.visible = false;
+    this.scene.add(this.retortGroup);
+
+    // 3. Спиртовка (интерактивная)
+    this.burnerGroup = new THREE.Group();
+    this.burnerGroup.position.set(this.vesselX, 0, 0);
+
+    const lampPts = [
+      new THREE.Vector2(0.001, 0.0),
+      new THREE.Vector2(0.38, 0.0),
+      new THREE.Vector2(0.41, 0.08),
+      new THREE.Vector2(0.34, 0.36),
+      new THREE.Vector2(0.14, 0.48),
+      new THREE.Vector2(0.14, 0.56),
+      new THREE.Vector2(0.10, 0.56)
+    ];
+    const lampGlass = new THREE.Mesh(
+      new THREE.LatheGeometry(lampPts, 32),
+      this._createGlassMaterial(0.16)
+    );
+    lampGlass.castShadow = true;
+    this.burnerGroup.add(lampGlass);
+
+    // Спирт внутри резервуара спиртовки
+    const alc = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.31, 0.36, 0.26, 26),
+      new THREE.MeshPhysicalMaterial({ color: '#bae6fd', transparent: true, opacity: 0.48, roughness: 0.1 })
+    );
+    alc.position.y = 0.16;
+    this.burnerGroup.add(alc);
+
+    const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, 0.1, 20), brass);
+    collar.position.y = 0.59;
+    this.burnerGroup.add(collar);
+
+    const wick = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.026, 0.032, 0.11, 14),
+      new THREE.MeshStandardMaterial({ color: '#d6d3d1', roughness: 0.95 })
+    );
+    wick.position.y = 0.65;
+    this.burnerGroup.add(wick);
+
+    // Обугленный кончик фитиля с тлеющим жаром после гашения
+    this.wickEmberMat = new THREE.MeshStandardMaterial({
+      color: '#1c1917',
+      emissive: '#ff4500',
+      emissiveIntensity: 0,
+      roughness: 0.9
+    });
+    const wickChar = new THREE.Mesh(
+      new THREE.SphereGeometry(0.030, 14, 12),
+      this.wickEmberMat
+    );
+    wickChar.scale.set(0.92, 1.35, 0.92);
+    wickChar.position.y = 0.71;
+    this.burnerGroup.add(wickChar);
+
+    // Стеклянный колпачок спиртовки (стоит рядом на столе во время горения)
+    this.snufferCap = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.105, 0.128, 0.24, 22),
+      this._createGlassMaterial(0.24)
+    );
+    this.snufferCap.position.set(0.54, 0.12, 0.16);
+    this.burnerGroup.add(this.snufferCap);
+
+    // Невидимый хитбокс спиртовки для удобного клика мышью/пальцем
+    const burnerHit = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.45, 0.45, 0.85, 16),
+      new THREE.MeshBasicMaterial({ visible: false })
+    );
+    burnerHit.position.y = 0.42;
+    burnerHit.userData = { action: 'burner', tip: 'Спиртовка: нажмите, чтобы переключить силу пламени' };
+    this.burnerGroup.add(burnerHit);
+    this.interactables.push(burnerHit);
+
+    // Органическое живое 3D-пламя (каплевидная геометрия + турбулентный GLSL-шейдер)
+    this.flameGroup = new THREE.Group();
+    this.flameGroup.position.set(0, 0.695, 0);
+    this.flameGroup.visible = false;
+
+    const outerGeo = this._createTeardropFlameGeo(0.148, 0.56, 28);
+    this.flameShaderMat = this._createOrganicFlameMaterial(0.56);
+    this.flameOuter = new THREE.Mesh(outerGeo, this.flameShaderMat);
+    this.flameOuter.renderOrder = 7;
+
+    // Второй внутренний светящийся язычок в противофазе для живой многослойности огня
+    const midGeo = this._createTeardropFlameGeo(0.098, 0.41, 24);
+    this.flameMidMat = this._createOrganicFlameMaterial(0.41);
+    this.flameMid = new THREE.Mesh(midGeo, this.flameMidMat);
+    this.flameMid.position.y = 0.025;
+    this.flameMid.renderOrder = 6;
+
+    // Внутренний голубоватый конус паров спирта у фитиля
+    const coreGeo = this._createTeardropFlameGeo(0.058, 0.17, 18);
+    this.flameInnerMat = new THREE.MeshBasicMaterial({
+      color: '#2563eb',
+      transparent: true,
+      opacity: 0.42,
+      depthWrite: false,
+      toneMapped: false
+    });
+    this.flameCore = new THREE.Mesh(coreGeo, this.flameInnerMat);
+    this.flameCore.position.y = 0.008;
+    this.flameCore.renderOrder = 5;
+
+    // Мягкий тепловой ореол вокруг языка пламени
+    this.flameHaloMat = new THREE.SpriteMaterial({
+      map: this._createHotSpotTexture(),
+      color: '#ff8c24',
+      transparent: true,
+      opacity: 0.28,
+      depthWrite: false,
+      toneMapped: false
+    });
+    this.flameHalo = new THREE.Sprite(this.flameHaloMat);
+    this.flameHalo.position.set(0, 0.23, 0);
+    this.flameHalo.scale.set(0.68, 0.78, 1);
+
+    this.flameGroup.add(this.flameHalo, this.flameCore, this.flameMid, this.flameOuter);
+    this.burnerGroup.add(this.flameGroup);
+    this.scene.add(this.burnerGroup);
+  }
+
+  _createHotSpotTexture() {
+    const c = document.createElement('canvas');
+    c.width = 128;
+    c.height = 128;
+    const g = c.getContext('2d');
+    const gr = g.createRadialGradient(64, 64, 3, 64, 64, 62);
+    gr.addColorStop(0.0, 'rgba(255, 245, 200, 0.95)');
+    gr.addColorStop(0.28, 'rgba(255, 132, 24, 0.72)');
+    gr.addColorStop(0.62, 'rgba(220, 38, 38, 0.28)');
+    gr.addColorStop(1.0, 'rgba(220, 38, 38, 0)');
+    g.fillStyle = gr;
+    g.fillRect(0, 0, 128, 128);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  _createTeardropFlameGeo(maxR = 0.14, height = 0.56, steps = 26) {
+    const pts = [];
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      // Естественный каплевидный профиль: узкое основание у фитиля -> пузатая середина -> тонкий язычок
+      let r;
+      if (t < 0.26) {
+        const k = t / 0.26;
+        r = maxR * (0.24 + 0.76 * Math.sin(k * Math.PI * 0.5));
+      } else {
+        const k = (t - 0.26) / 0.74;
+        r = maxR * Math.pow(1 - k, 1.32) * (1 + 0.12 * Math.sin(k * Math.PI));
+      }
+      pts.push(new THREE.Vector2(Math.max(0.0015, r), t * height));
+    }
+    return new THREE.LatheGeometry(pts, 28);
+  }
+
+  _createOrganicFlameMaterial(flameHeight = 0.56) {
+    return new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      toneMapped: false,
+      side: THREE.FrontSide,
+      uniforms: {
+        uTime: { value: 0 },
+        uFlameH: { value: flameHeight },
+        uPower: { value: 1.0 },
+        uFlicker: { value: 1.0 },
+        uCapWorldY: { value: 10.0 },
+        uTint: { value: new THREE.Color('#ff7b00') },
+        uTintMix: { value: 0.0 },
+        uOpacity: { value: 0.96 }
+      },
+      vertexShader: `
+        uniform float uTime;
+        uniform float uFlameH;
+        uniform float uPower;
+        uniform float uFlicker;
+        uniform float uCapWorldY;
+
+        varying float vH;
+        varying vec3 vNormalView;
+        varying vec3 vViewDir;
+        varying float vSpread;
+
+        void main() {
+          vH = clamp(position.y / uFlameH, 0.0, 1.0);
+          vec3 pos = position;
+
+          // Основание пламени закреплено на фитиле, верхний язычок колеблется конвекцией
+          float pin = smoothstep(0.0, 0.22, vH);
+          float w1 = sin(vH * 8.2 - uTime * 13.5);
+          float w2 = sin(vH * 15.5 - uTime * 21.0 + pos.z * 10.0);
+          float wz = cos(vH * 9.5 - uTime * 11.8 + pos.x * 8.0);
+          float waist = 1.0 + 0.075 * sin(vH * 10.5 - uTime * 17.0) * pin;
+
+          pos.x = pos.x * waist + (w1 * 0.025 + w2 * 0.011) * pin * uPower;
+          pos.z = pos.z * waist + (wz * 0.019) * pin * uPower;
+          pos.y *= uFlicker;
+
+          vec4 worldPos = modelMatrix * vec4(pos, 1.0);
+
+          // Естественное обтекание дна колбы / пробирки / рассекательной сетки
+          vSpread = 0.0;
+          if (worldPos.y > uCapWorldY) {
+            float over = worldPos.y - uCapWorldY;
+            vSpread = clamp(over * 3.0, 0.0, 1.0);
+            worldPos.y = uCapWorldY - 0.004 * vSpread;
+            vec3 originWorld = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+            vec2 rad = worldPos.xz - originWorld.xz;
+            float rLen = length(rad);
+            vec2 dir = rLen > 0.0001 ? rad / rLen : vec2(1.0, 0.0);
+            worldPos.xz += dir * over * 0.68;
+          }
+
+          vec4 mvPos = viewMatrix * worldPos;
+          vNormalView = normalize(normalMatrix * normal);
+          vViewDir = normalize(-mvPos.xyz);
+          gl_Position = projectionMatrix * mvPos;
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform vec3 uTint;
+        uniform float uTintMix;
+        uniform float uOpacity;
+
+        varying float vH;
+        varying vec3 vNormalView;
+        varying vec3 vViewDir;
+        varying float vSpread;
+
+        void main() {
+          float ndv = abs(dot(normalize(vNormalView), normalize(vViewDir)));
+          float rim = smoothstep(0.02, 0.46, ndv);
+
+          float turb = 0.06 * sin(vH * 17.0 - uTime * 18.5 + vNormalView.x * 3.5);
+          float h = clamp(vH + turb, 0.0, 1.0);
+
+          // Зоны пламени спиртовки: голубая зона у фитиля -> соломенно-золотое ядро -> насыщенный огненно-янтарный язычок
+          vec3 cBlue   = vec3(0.15, 0.46, 0.98);
+          vec3 cHot    = vec3(1.00, 0.92, 0.45);
+          vec3 cGold   = vec3(1.00, 0.62, 0.04);
+          vec3 cOrange = vec3(0.98, 0.34, 0.02);
+          vec3 cTip    = vec3(0.90, 0.16, 0.02);
+
+          vec3 col = mix(cBlue, cHot, smoothstep(0.03, 0.22, h));
+          col = mix(col, cGold, smoothstep(0.22, 0.52, h));
+          col = mix(col, cOrange, smoothstep(0.52, 0.82, h));
+          col = mix(col, cTip, smoothstep(0.82, 0.99, h));
+
+          // Раскалённое светлое ядро в средней трети
+          float coreGlow = pow(ndv, 2.0) * smoothstep(0.08, 0.30, h) * (1.0 - smoothstep(0.58, 0.94, h));
+          col = mix(col, vec3(1.0, 0.98, 0.78), coreGlow * 0.62);
+
+          // Окрашивание пламени катионами металлов с сохранением голубой зоны у фитиля
+          if (uTintMix > 0.01) {
+            float ionMask = smoothstep(0.09, 0.26, h);
+            vec3 ionCol = mix(uTint, vec3(1.0, 0.98, 0.90), coreGlow * 0.48);
+            col = mix(col, ionCol, ionMask * uTintMix);
+          }
+
+          float baseFade = smoothstep(0.0, 0.07, vH);
+          float tipFade  = 1.0 - smoothstep(0.82, 1.0, vH);
+          float spreadFade = 1.0 - vSpread * 0.25;
+          float alpha = rim * baseFade * tipFade * spreadFade * uOpacity;
+
+          gl_FragColor = vec4(col, clamp(alpha, 0.0, 0.97));
+        }
+      `
+    });
+  }
+
+  _createGlassMaterial(opacity = 0.18) {
+    const mat = new THREE.MeshPhysicalMaterial({
+      color: '#eef8ff',
+      transparent: true,
+      opacity,
+      roughness: 0.05,
+      metalness: 0.0,
+      reflectivity: 0.95,
+      ior: 1.48,
+      envMapIntensity: 1.35,
+      depthWrite: false,
+      side: THREE.FrontSide
+    });
+    // Усиление краевого блика Френеля для выразительных стеклянных стенок
+    mat.onBeforeCompile = (shader) => {
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <dithering_fragment>',
+        `#include <dithering_fragment>
+         float fres = pow(1.0 - abs(dot(normalize(vNormal), normalize(vViewPosition))), 2.6);
+         gl_FragColor.rgb += vec3(0.78, 0.88, 0.96) * fres * 0.55;
+         gl_FragColor.a = clamp(gl_FragColor.a + fres * 0.46, 0.0, 0.92);`
+      );
+    };
+    return mat;
+  }
+
+  _vesselProfile(kind, offset = 0) {
+    // Профиль в метрах сцены: [radius, yFromVesselBottom]
+    if (kind === 'flask') {
+      return [
+        [0.001, 0.0 + offset],
+        [0.44 + offset, 0.0 + offset],
+        [0.50 + offset, 0.08],
+        [0.47 + offset, 0.22],
+        [0.20 + offset, 0.88],
+        [0.18 + offset, 1.24],
+        [0.22 + offset, 1.28]
+      ];
+    }
+    if (kind === 'round') {
+      const pts = [];
+      const R = 0.46 + offset;
+      // Сферическое тело круглодонной колбы до горлышка
+      for (let i = 0; i <= 12; i++) {
+        const phi = (i / 12) * Math.PI * 0.78; // от нижнего полюса до плечиков
+        const rr = Math.max(0.001, Math.sin(phi) * R);
+        const yy = (1 - Math.cos(phi)) * R;
+        pts.push([rr, yy]);
+      }
+      pts.push([0.185 + offset, 0.92], [0.18 + offset, 1.34], [0.22 + offset, 1.39]);
+      return pts;
+    }
+    if (kind === 'tube') {
+      const pts = [];
+      const R = 0.175 + offset;
+      for (let i = 0; i <= 6; i++) {
+        const a = (i / 6) * (Math.PI / 2);
+        pts.push([Math.max(0.001, Math.sin(a) * R), (1 - Math.cos(a)) * R]);
+      }
+      pts.push([R, 1.34], [R + 0.03, 1.38]);
+      return pts;
+    }
+    if (kind === 'evap') {
+      // Фарфоровая выпарительная чашка (широкая открытая полусферическая чаша)
+      return [
+        [0.001, 0.0 + offset],
+        [0.19 + offset, 0.01 + offset],
+        [0.34 + offset, 0.09],
+        [0.46 + offset, 0.23],
+        [0.54 + offset, 0.40],
+        [0.58 + offset, 0.52],
+        [0.62 + offset, 0.56]
+      ];
+    }
+    if (kind === 'crucible') {
+      // Высокий конусный фарфоровый тигель для прокаливания в муфельной печи (до 1000 °C)
+      return [
+        [0.001, 0.0 + offset],
+        [0.16 + offset, 0.01 + offset],
+        [0.21 + offset, 0.16],
+        [0.26 + offset, 0.42],
+        [0.30 + offset, 0.64],
+        [0.325 + offset, 0.70]
+      ];
+    }
+    // beaker
+    return [
+      [0.001, 0.0 + offset],
+      [0.48 + offset, 0.0 + offset],
+      [0.51 + offset, 0.05],
+      [0.51 + offset, 1.16],
+      [0.55 + offset, 1.21]
+    ];
+  }
+
+  _innerRadiusAt(kind, yLocal) {
+    if (kind === 'tube') {
+      if (yLocal < 0.17) {
+        const dy = 0.17 - yLocal;
+        return Math.sqrt(Math.max(0.001, 0.17 * 0.17 - dy * dy)) * 0.94;
+      }
+      return 0.168;
+    }
+    if (kind === 'round') {
+      if (yLocal < 0.82) {
+        const R = 0.445;
+        const dy = yLocal - R;
+        return Math.max(0.17, Math.sqrt(Math.max(0.02, R * R - dy * dy)));
+      }
+      return 0.174;
+    }
+    if (kind === 'evap') {
+      const t = Math.max(0, Math.min(1, yLocal / 0.52));
+      return 0.18 + t * 0.37;
+    }
+    if (kind === 'crucible') {
+      const t = Math.max(0, Math.min(1, yLocal / 0.66));
+      return 0.15 + t * 0.135;
+    }
+    if (kind === 'beaker') {
+      return 0.495;
+    }
+    // flask
+    if (yLocal <= 0.22) return 0.46;
+    if (yLocal >= 0.88) return 0.18;
+    const t = (yLocal - 0.22) / (0.88 - 0.22);
+    return 0.46 * (1 - t) + 0.18 * t;
+  }
+
+  _liquidMaxHeight(kind) {
+    if (kind === 'tube') return 1.08;
+    if (kind === 'round') return 0.86;
+    if (kind === 'evap') return 0.43;
+    if (kind === 'crucible') return 0.55;
+    if (kind === 'beaker') return 0.98;
+    return 0.82; // flask 100 ml
+  }
+
+  _mouthHeight(kind) {
+    if (kind === 'tube') return 1.38;
+    if (kind === 'round') return 1.39;
+    if (kind === 'evap') return 0.56;
+    if (kind === 'crucible') return 0.70;
+    if (kind === 'beaker') return 1.21;
+    return 1.28;
+  }
+
+  _buildScaleTexture(kind) {
+    const c = document.createElement('canvas');
+    c.width = 256;
+    c.height = 512;
+    const g = c.getContext('2d');
+    g.clearRect(0, 0, 256, 512);
+    g.strokeStyle = 'rgba(255,255,255,0.82)';
+    g.fillStyle = 'rgba(255,255,255,0.88)';
+    g.lineWidth = 3;
+    g.font = '700 22px system-ui, sans-serif';
+    g.textAlign = 'left';
+    g.textBaseline = 'middle';
+
+    const marksMap = {
+      tube: [5, 10, 15, 20, 25],
+      crucible: [10, 20, 30, 40],
+      evap: [20, 40, 60, 80],
+      flask: [20, 40, 60, 80, 100],
+      round: [30, 60, 90, 120, 150],
+      beaker: [50, 100, 150, 200]
+    };
+    const marks = marksMap[kind] || marksMap.flask;
+    const cap = VESSELS[kind].cap;
+    marks.forEach((ml) => {
+      const frac = ml / cap;
+      const y = 460 - frac * 370;
+      g.beginPath();
+      g.moveTo(85, y);
+      g.lineTo(132, y);
+      g.stroke();
+      g.fillText(String(ml), 140, y);
+    });
+    g.font = '600 18px system-ui, sans-serif';
+    g.fillText('мл', 140, 52);
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  _buildVessels() {
+    this.vesselRoot = new THREE.Group();
+    this.vesselRoot.position.set(this.vesselX, this.vesselBaseY, 0);
+    this.scene.add(this.vesselRoot);
+
+    this.liqClipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 1.5);
+    this.gasClipPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -1.5);
+    this.sedClipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 1.2);
+    this.mirrorClipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 1.2);
+
+    this.liqMat = new THREE.MeshPhysicalMaterial({
+      color: '#dff2fc',
+      transparent: true,
+      opacity: 0.42,
+      roughness: 0.08,
+      metalness: 0.0,
+      ior: 1.33,
+      side: THREE.DoubleSide,
+      clippingPlanes: [this.liqClipPlane]
+    });
+
+    this.meniscusMat = new THREE.MeshPhysicalMaterial({
+      color: '#dff2fc',
+      transparent: true,
+      opacity: 0.62,
+      roughness: 0.04,
+      metalness: 0.05,
+      envMapIntensity: 1.4
+    });
+
+    this.sedimentMat = new THREE.MeshStandardMaterial({
+      color: '#f8fafc',
+      roughness: 0.9,
+      transparent: true,
+      opacity: 0,
+      clippingPlanes: [this.sedClipPlane]
+    });
+
+    this.mirrorMat = new THREE.MeshStandardMaterial({
+      color: '#f1f5f9',
+      metalness: 1.0,
+      roughness: 0.06,
+      transparent: true,
+      opacity: 0,
+      side: THREE.DoubleSide,
+      clippingPlanes: [this.mirrorClipPlane]
+    });
+
+    this.sublMat = new THREE.MeshStandardMaterial({
+      color: '#ffffff',
+      roughness: 0.95,
+      transparent: true,
+      opacity: 0,
+      side: THREE.DoubleSide
+    });
+
+    this.headGasMat = new THREE.MeshBasicMaterial({
+      color: '#b45309',
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      clippingPlanes: [this.gasClipPlane]
+    });
+
+    const porcelainOuterMat = new THREE.MeshPhysicalMaterial({
+      color: '#f8fafc',
+      roughness: 0.16,
+      metalness: 0.02,
+      clearcoat: 0.85,
+      clearcoatRoughness: 0.1,
+      side: THREE.FrontSide
+    });
+    const porcelainInnerMat = new THREE.MeshStandardMaterial({
+      color: '#f1f5f9',
+      roughness: 0.28,
+      metalness: 0.02,
+      side: THREE.BackSide
+    });
+
+    this.vesselMeshes = {};
+    for (const kind of ['flask', 'round', 'tube', 'beaker', 'evap', 'crucible']) {
+      const grp = new THREE.Group();
+      const isPorcelain = kind === 'evap' || kind === 'crucible';
+      const outerPts = this._vesselProfile(kind, 0.014).map(([r, y]) => new THREE.Vector2(r, y));
+      const innerPts = this._vesselProfile(kind, 0).slice(0, -1).map(([r, y]) => new THREE.Vector2(Math.max(0.001, r * 0.96), y + 0.01));
+
+      const glassBack = new THREE.Mesh(
+        new THREE.LatheGeometry(outerPts, 44),
+        isPorcelain
+          ? porcelainInnerMat
+          : new THREE.MeshPhysicalMaterial({
+              color: '#dceefb',
+              transparent: true,
+              opacity: 0.08,
+              roughness: 0.08,
+              side: THREE.BackSide,
+              depthWrite: false
+            })
+      );
+      const glassFront = new THREE.Mesh(
+        new THREE.LatheGeometry(outerPts, 44),
+        isPorcelain ? porcelainOuterMat : this._createGlassMaterial(0.17)
+      );
+      glassFront.renderOrder = isPorcelain ? 2 : 6;
+
+      const liqMesh = new THREE.Mesh(new THREE.LatheGeometry(innerPts, 40), this.liqMat);
+      liqMesh.renderOrder = 3;
+
+      const sedMesh = new THREE.Mesh(new THREE.LatheGeometry(innerPts, 36), this.sedimentMat);
+      sedMesh.scale.set(0.985, 1, 0.985);
+      sedMesh.renderOrder = 4;
+
+      const mirMesh = new THREE.Mesh(new THREE.LatheGeometry(innerPts, 36), this.mirrorMat);
+      mirMesh.scale.set(0.995, 1, 0.995);
+      mirMesh.renderOrder = 5;
+
+      const headGasMesh = new THREE.Mesh(new THREE.LatheGeometry(innerPts, 32), this.headGasMat);
+      headGasMesh.renderOrder = 4;
+
+      // Кольцо возгонки у горлышка
+      const mouthY = this._mouthHeight(kind);
+      const neckR = this._innerRadiusAt(kind, Math.max(0.08, mouthY - 0.22));
+      const sublRing = new THREE.Mesh(
+        new THREE.CylinderGeometry(neckR * 0.99, neckR * 0.99, 0.22, 32, 1, true),
+        this.sublMat
+      );
+      sublRing.position.y = Math.max(0.18, mouthY - 0.22);
+      sublRing.renderOrder = 5;
+
+      // Градуировка на передней стенке (только на прозрачной стеклянной посуде)
+      const scaleR = kind === 'tube' ? 0.192 : (kind === 'beaker' ? 0.528 : (kind === 'round' ? 0.475 : 0.36));
+      const scaleGeo = new THREE.CylinderGeometry(scaleR, kind === 'flask' ? 0.48 : scaleR, this._liquidMaxHeight(kind) * 1.05, 24, 1, true, -0.35, 0.7);
+      const scaleMesh = new THREE.Mesh(
+        scaleGeo,
+        new THREE.MeshBasicMaterial({
+          map: this._buildScaleTexture(kind),
+          transparent: true,
+          depthWrite: false
+        })
+      );
+      scaleMesh.visible = !isPorcelain;
+      scaleMesh.position.y = this._liquidMaxHeight(kind) * 0.52 + 0.04;
+      scaleMesh.renderOrder = 7;
+
+      // Невидимый хитбокс сосуда для добавления выбранного реактива по клику
+      const hit = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.52, 0.52, 1.35, 16),
+        new THREE.MeshBasicMaterial({ visible: false })
+      );
+      hit.position.y = 0.68;
+      hit.userData = { action: 'vessel', tip: 'Нажмите на сосуд, чтобы добавить выбранный реактив' };
+      this.interactables.push(hit);
+
+      grp.add(glassBack, liqMesh, sedMesh, mirMesh, headGasMesh, sublRing, glassFront, scaleMesh, hit);
+      grp.visible = kind === 'flask';
+      this.vesselRoot.add(grp);
+      this.vesselMeshes[kind] = grp;
+    }
+
+    // Диск мениска жидкости
+    this.meniscusMesh = new THREE.Mesh(new THREE.CircleGeometry(1, 40), this.meniscusMat);
+    this.meniscusMesh.rotation.x = -Math.PI / 2;
+    this.meniscusMesh.renderOrder = 4;
+    this.meniscusMesh.visible = false;
+    this.vesselRoot.add(this.meniscusMesh);
+
+    // Группа кусочков твёрдых веществ в сосуде
+    this.solidsGroup = new THREE.Group();
+    this.vesselRoot.add(this.solidsGroup);
+    this.solidsSig = '';
+
+    // Мягкий объёмный ореол люминесценции (квантовые точки, флуоресцеин, ZnS:Cu и хемилюминесценция люминола)
+    this.lumHaloMat = new THREE.SpriteMaterial({
+      map: this._createHotSpotTexture(),
+      color: '#22ff66',
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+    this.lumHaloSprite = new THREE.Sprite(this.lumHaloMat);
+    this.lumHaloSprite.position.set(0, 0.35, 0);
+    this.lumHaloSprite.scale.set(1.35, 1.35, 1);
+    this.lumHaloSprite.renderOrder = 9;
+    this.lumHaloSprite.visible = false;
+    this.vesselRoot.add(this.lumHaloSprite);
+  }
+
+  _buildGasCollector() {
+    // Кристаллизатор с водой + перевёрнутая градуированная пробирка справа + газоотводная трубка
+    this.gasRigGroup = new THREE.Group();
+    this.scene.add(this.gasRigGroup);
+
+    const troughX = 1.55;
+    // Стеклянная ванна (кристаллизатор)
+    const troughGlass = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.62, 0.58, 0.52, 36, 1, true),
+      this._createGlassMaterial(0.20)
+    );
+    troughGlass.position.set(troughX, 0.26, 0);
+    this.gasRigGroup.add(troughGlass);
+
+    const troughWater = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.59, 0.56, 0.40, 32),
+      new THREE.MeshPhysicalMaterial({ color: '#bae6fd', transparent: true, opacity: 0.45, roughness: 0.08 })
+    );
+    troughWater.position.set(troughX, 0.20, 0);
+    this.gasRigGroup.add(troughWater);
+
+    // Перевёрнутый цилиндр-газометр (до 25 мл)
+    const invTube = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.18, 0.18, 1.35, 28),
+      this._createGlassMaterial(0.20)
+    );
+    invTube.position.set(troughX, 0.92, 0);
+    this.gasRigGroup.add(invTube);
+
+    // Столбик воды в газометре, опускающийся по мере сбора газа
+    this.collectorWaterMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.168, 0.168, 1.0, 24),
+      new THREE.MeshPhysicalMaterial({ color: '#93c5fd', transparent: true, opacity: 0.52, roughness: 0.06 })
+    );
+    this.collectorWaterMesh.position.set(troughX, 0.90, 0);
+    this.gasRigGroup.add(this.collectorWaterMesh);
+
+    // Хитбокс пробирки-газометра (проверка собранного газа лучиной)
+    const gasHit = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.32, 0.32, 1.45, 14),
+      new THREE.MeshBasicMaterial({ visible: false })
+    );
+    gasHit.position.set(troughX, 0.92, 0);
+    gasHit.userData = { action: 'splint', tip: 'Пробирка-приёмник газа: нажмите, чтобы проверить газ лучиной' };
+    this.gasRigGroup.add(gasHit);
+    this.interactables.push(gasHit);
+
+    // Резиновая пробка и изогнутая стеклянная газоотводная трубка (перестраиваются под высоту посуды)
+    this.stopperMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.20, 0.16, 0.16, 22),
+      new THREE.MeshStandardMaterial({ color: '#475569', roughness: 0.85 })
+    );
+    this.gasRigGroup.add(this.stopperMesh);
+
+    this.deliveryTubeMesh = null;
+    this.deliveryTubeMat = new THREE.MeshPhysicalMaterial({
+      color: '#e2f1fb',
+      transparent: true,
+      opacity: 0.52,
+      roughness: 0.08
+    });
+    this._rebuildDeliveryTube('flask');
+  }
+
+  _rebuildDeliveryTube(kind) {
+    if (this.deliveryTubeMesh) {
+      this.gasRigGroup.remove(this.deliveryTubeMesh);
+      this.deliveryTubeMesh.geometry.dispose();
+    }
+    const mouthWorldY = (kind === 'tube' ? 0.92 : this.vesselBaseY) + this._mouthHeight(kind);
+    const neckR = kind === 'tube' ? 0.18 : 0.19;
+    this.stopperMesh.scale.set(neckR / 0.18, 1, neckR / 0.18);
+    this.stopperMesh.position.set(this.vesselX, mouthWorldY - 0.02, 0);
+
+    const curve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(this.vesselX, mouthWorldY - 0.08, 0),
+      new THREE.Vector3(this.vesselX, mouthWorldY + 0.25, 0),
+      new THREE.Vector3(0.55, mouthWorldY + 0.22, 0),
+      new THREE.Vector3(1.22, 0.55, 0),
+      new THREE.Vector3(1.55, 0.24, 0)
+    ]);
+    const geo = new THREE.TubeGeometry(curve, 44, 0.024, 12, false);
+    this.deliveryTubeMesh = new THREE.Mesh(geo, this.deliveryTubeMat);
+    this.gasRigGroup.add(this.deliveryTubeMesh);
+  }
+
+  _buildWashBottle() {
+    // Пластиковая промывалка с дистиллированной водой H₂O слева на столе
+    const wb = new THREE.Group();
+    wb.position.set(-1.52, 0, 0.26);
+
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.24, 0.26, 0.84, 26),
+      new THREE.MeshPhysicalMaterial({ color: '#f8fafc', transparent: true, opacity: 0.72, roughness: 0.35 })
+    );
+    body.position.y = 0.42;
+    body.castShadow = true;
+    wb.add(body);
+
+    const water = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.22, 0.24, 0.56, 22),
+      new THREE.MeshBasicMaterial({ color: '#bae6fd', transparent: true, opacity: 0.55 })
+    );
+    water.position.y = 0.29;
+    wb.add(water);
+
+    const cap = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.10, 0.12, 0.12, 20),
+      new THREE.MeshStandardMaterial({ color: '#2563eb', roughness: 0.4 })
+    );
+    cap.position.y = 0.90;
+    wb.add(cap);
+
+    const nozzleCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0, 0.95, 0),
+      new THREE.Vector3(0.05, 1.16, 0),
+      new THREE.Vector3(0.26, 1.10, 0)
+    ]);
+    const nozzle = new THREE.Mesh(
+      new THREE.TubeGeometry(nozzleCurve, 16, 0.017, 8, false),
+      new THREE.MeshStandardMaterial({ color: '#2563eb', roughness: 0.4 })
+    );
+    wb.add(nozzle);
+
+    const hit = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.34, 0.34, 1.2, 14),
+      new THREE.MeshBasicMaterial({ visible: false })
+    );
+    hit.position.y = 0.6;
+    hit.userData = { action: 'water', tip: 'Промывалка H₂O: нажмите, чтобы долить 5 мл дистиллированной воды' };
+    wb.add(hit);
+    this.interactables.push(hit);
+
+    this.scene.add(wb);
+  }
+
+  _drawLcdCanvas(ctx, bg, fg, topText, mainText, subText = '') {
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, 256, 128);
+    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(4, 4, 248, 120);
+
+    ctx.fillStyle = fg;
+    ctx.font = '700 20px ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(topText, 16, 32);
+
+    ctx.font = '800 44px ui-monospace, monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(mainText, 240, 84);
+
+    if (subText) {
+      ctx.font = '600 18px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(subText, 16, 112);
+    }
+  }
+
+  _buildLabEquipment() {
+    const darkMetal = new THREE.MeshStandardMaterial({ color: '#334155', metalness: 0.75, roughness: 0.38 });
+    const chrome = new THREE.MeshStandardMaterial({ color: '#cbd5e1', metalness: 0.9, roughness: 0.22 });
+
+    // 1. Магнитный фторопластовый якорь-мешалка на дне сосуда
+    this.stirBarMesh = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.017, 0.085, 8, 14),
+      new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.22, metalness: 0.05 })
+    );
+    this.stirBarMesh.rotation.z = Math.PI / 2;
+    this.stirBarMesh.position.set(0, 0.028, 0);
+    this.stirBarMesh.visible = false;
+    this.vesselRoot.add(this.stirBarMesh);
+
+    // 2. Ледяная баня (кристаллизатор со льдом вокруг сосуда)
+    this.iceBathGroup = new THREE.Group();
+    this.iceBathGroup.visible = false;
+    const basinGlass = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.66, 0.60, 0.44, 36, 1, true),
+      this._createGlassMaterial(0.24)
+    );
+    basinGlass.position.y = 0.20;
+    const basinBottom = new THREE.Mesh(
+      new THREE.CircleGeometry(0.60, 32),
+      this._createGlassMaterial(0.22)
+    );
+    basinBottom.rotation.x = -Math.PI / 2;
+    basinBottom.position.y = 0.005;
+    const iceWater = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.64, 0.58, 0.34, 32),
+      new THREE.MeshPhysicalMaterial({ color: '#bae6fd', transparent: true, opacity: 0.46, roughness: 0.08 })
+    );
+    iceWater.position.y = 0.17;
+    this.iceBathGroup.add(basinGlass, basinBottom, iceWater);
+
+    const iceMat = new THREE.MeshPhysicalMaterial({
+      color: '#e0f2fe',
+      transparent: true,
+      opacity: 0.76,
+      roughness: 0.12,
+      ior: 1.31
+    });
+    for (let i = 0; i < 10; i++) {
+      const ang = (i / 10) * Math.PI * 2;
+      const rr = 0.50 + (i % 2) * 0.05;
+      const cube = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.075, 0.095), iceMat);
+      cube.position.set(Math.cos(ang) * rr, 0.28 + (i % 3) * 0.015, Math.sin(ang) * rr);
+      cube.rotation.set(i * 0.4, ang, i * 0.25);
+      this.iceBathGroup.add(cube);
+      this.iceCubes.push({ mesh: cube, baseY: cube.position.y, ph: i * 0.9 });
+    }
+    this.scene.add(this.iceBathGroup);
+
+    // 3. Титровальная бюретка 25 мл на штативе (следует за сосудом при включении)
+    this.buretteGroup = new THREE.Group();
+    this.buretteGroup.visible = false;
+
+    this.buretteStand = new THREE.Group();
+    const bStandBase = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.045, 0.36), darkMetal);
+    bStandBase.position.set(-0.68, 0.022, -0.18);
+    const bStandRod = new THREE.Mesh(new THREE.CylinderGeometry(0.020, 0.020, 3.25, 14), chrome);
+    bStandRod.position.set(-0.68, 1.64, -0.18);
+    this.buretteStand.add(bStandBase, bStandRod);
+    this.buretteGroup.add(this.buretteStand);
+
+    // Подвижная каретка бюретки (центрируется над горлышком активного сосуда)
+    this.buretteColumn = new THREE.Group();
+    const bClampArm = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.70, 10), darkMetal);
+    bClampArm.rotation.z = Math.PI / 2;
+    bClampArm.position.set(-0.34, 0.52, -0.09);
+
+    const bGlassTube = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.046, 0.046, 1.05, 22, 1, true),
+      this._createGlassMaterial(0.24)
+    );
+    bGlassTube.position.y = 0.62;
+
+    const bTip = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.036, 0.009, 0.16, 16),
+      this._createGlassMaterial(0.28)
+    );
+    bTip.position.y = 0.02;
+
+    this.buretteLiqMat = new THREE.MeshPhysicalMaterial({
+      color: '#dff2fc',
+      transparent: true,
+      opacity: 0.68,
+      roughness: 0.08
+    });
+    this.buretteLiqMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.039, 0.039, 0.96, 18), this.buretteLiqMat);
+    this.buretteLiqMesh.position.y = 0.60;
+
+    // Поворотный ПТФЭ-кран бюретки
+    this.buretteValve = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.016, 0.016, 0.14, 14),
+      new THREE.MeshStandardMaterial({ color: '#2563eb', roughness: 0.35 })
+    );
+    this.buretteValve.rotation.x = Math.PI / 2;
+    this.buretteValve.position.set(0, 0.09, 0.02);
+
+    const bHit = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.14, 0.14, 1.25, 12),
+      new THREE.MeshBasicMaterial({ visible: false })
+    );
+    bHit.position.y = 0.55;
+    bHit.userData = { action: 'buretteDrop', tip: 'Бюретка 25 мл: нажмите на кран, чтобы прикапать +1,0 мл титранта' };
+    this.interactables.push(bHit);
+
+    this.buretteColumn.add(bClampArm, bGlassTube, bTip, this.buretteLiqMesh, this.buretteValve, bHit);
+    this.buretteGroup.add(this.buretteColumn);
+
+    this.buretteDropMat = new THREE.MeshPhysicalMaterial({ color: '#dff2fc', transparent: true, opacity: 0.85, roughness: 0.05 });
+    this.buretteDropMesh = new THREE.Mesh(new THREE.SphereGeometry(0.022, 12, 12), this.buretteDropMat);
+    this.buretteDropMesh.visible = false;
+    this.scene.add(this.buretteDropMesh);
+    this.scene.add(this.buretteGroup);
+
+    // 4. СТОЛ 2 (X = +5.0): Магнитная мешалка с подогревом (керамическая термоплитка + 2 ручки + ЖК-экран)
+    const hpX = 4.90;
+    const hpZ = 0.05;
+    this.hotplateGroup = new THREE.Group();
+    this.hotplateGroup.position.set(hpX, 0, hpZ);
+
+    const hpChassis = new THREE.Mesh(
+      new THREE.BoxGeometry(0.96, 0.15, 0.92),
+      new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.30, metalness: 0.08 })
+    );
+    hpChassis.position.set(0, 0.085, 0);
+    hpChassis.castShadow = true;
+    hpChassis.receiveShadow = true;
+
+    // Скошенная передняя панель управления термомешалки
+    const hpApron = new THREE.Mesh(
+      new THREE.BoxGeometry(0.94, 0.13, 0.24),
+      new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.42, metalness: 0.25 })
+    );
+    hpApron.rotation.x = -Math.PI / 6;
+    hpApron.position.set(0, 0.075, 0.48);
+    hpApron.castShadow = true;
+
+    // Белая стеклокерамическая нагревательная платформа (верх на y = 0.205)
+    const hpCeramic = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.40, 0.42, 0.05, 40),
+      new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.18, metalness: 0.04 })
+    );
+    hpCeramic.position.set(0, 0.18, -0.04);
+    hpCeramic.receiveShadow = true;
+
+    // Светящееся инфракрасное кольцо накала керамической конфорки
+    this.hotplateRingMat = new THREE.MeshStandardMaterial({
+      color: '#cbd5e1',
+      emissive: '#ff4d00',
+      emissiveIntensity: 0,
+      roughness: 0.35
+    });
+    const hpGlowRing = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.022, 12, 40), this.hotplateRingMat);
+    hpGlowRing.rotation.x = Math.PI / 2;
+    hpGlowRing.position.set(0, 0.206, -0.04);
+
+    // Две поворотные ручки: слева — обороты якоря (RPM), справа — температура подогрева (°C)
+    const knobGeo = new THREE.CylinderGeometry(0.052, 0.058, 0.048, 22);
+    this.hotplateRpmKnob = new THREE.Group();
+    const kRpmBody = new THREE.Mesh(knobGeo, new THREE.MeshStandardMaterial({ color: '#0ea5e9', roughness: 0.32, metalness: 0.2 }));
+    const kRpmTick = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.052, 0.035), new THREE.MeshBasicMaterial({ color: '#ffffff' }));
+    kRpmTick.position.set(0, 0.005, -0.022);
+    this.hotplateRpmKnob.add(kRpmBody, kRpmTick);
+    this.hotplateRpmKnob.rotation.x = Math.PI / 3;
+    this.hotplateRpmKnob.position.set(-0.31, 0.105, 0.54);
+
+    this.hotplateTempKnob = new THREE.Group();
+    const kTmpBody = new THREE.Mesh(knobGeo, new THREE.MeshStandardMaterial({ color: '#f97316', roughness: 0.32, metalness: 0.2 }));
+    const kTmpTick = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.052, 0.035), new THREE.MeshBasicMaterial({ color: '#ffffff' }));
+    kTmpTick.position.set(0, 0.005, -0.022);
+    this.hotplateTempKnob.add(kTmpBody, kTmpTick);
+    this.hotplateTempKnob.rotation.x = Math.PI / 3;
+    this.hotplateTempKnob.position.set(0.31, 0.105, 0.54);
+
+    // Цифровой дисплей магнитной мешалки с подогревом
+    this.hotplateCanvas = document.createElement('canvas');
+    this.hotplateCanvas.width = 256;
+    this.hotplateCanvas.height = 128;
+    this.hotplateCtx = this.hotplateCanvas.getContext('2d');
+    this._drawLcdCanvas(this.hotplateCtx, '#0f172a', '#38bdf8', 'ТЕРМОМЕШАЛКА', 'ВЫКЛ', '0 об/мин · 22 °C');
+    this.hotplateTex = new THREE.CanvasTexture(this.hotplateCanvas);
+    this.hotplateTex.colorSpace = THREE.SRGBColorSpace;
+
+    const hpScreen = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.42, 0.115),
+      new THREE.MeshBasicMaterial({ map: this.hotplateTex })
+    );
+    hpScreen.rotation.x = -Math.PI / 6;
+    hpScreen.position.set(0, 0.105, 0.545);
+
+    // Задняя стойка-держатель пробирок и круглодонных колб на самой термомешалке
+    const hpRod = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 1.55, 12), chrome);
+    hpRod.position.set(-0.36, 0.82, -0.34);
+    this.hotplateClamp = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.035, 0.05), darkMetal);
+    this.hotplateClamp.position.set(-0.18, 0.92, -0.18);
+    this.hotplateClamp.rotation.y = 0.42;
+
+    // Хитбоксы левой ручки (мешалка) и правой ручки / платформы (подогрев)
+    const hpStirHit = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.25, 0.34), new THREE.MeshBasicMaterial({ visible: false }));
+    hpStirHit.position.set(-0.30, 0.12, 0.48);
+    hpStirHit.userData = { action: 'stirrer', tip: 'Магнитная мешалка: нажмите, чтобы вкл/выкл вращение якоря (600 об/мин)' };
+    this.interactables.push(hpStirHit);
+
+    const hpHeatHit = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.26, 0.72), new THREE.MeshBasicMaterial({ visible: false }));
+    hpHeatHit.position.set(0.20, 0.13, 0.22);
+    hpHeatHit.userData = { action: 'hotplate', tip: 'Подогрев платформы мешалки: нажмите для выбора режима (Выкл → 60 °C → 125 °C → 260 °C)' };
+    this.interactables.push(hpHeatHit);
+
+    this.hotplateGroup.add(
+      hpChassis, hpApron, hpCeramic, hpGlowRing,
+      this.hotplateRpmKnob, this.hotplateTempKnob, hpScreen,
+      hpRod, this.hotplateClamp, hpStirHit, hpHeatHit
+    );
+    this.scene.add(this.hotplateGroup);
+
+    // 5. СТОЛ 2: Стойка с фильтровальной воронкой и электронные весы (0,01 г)
+    this.funnelStandGroup = new THREE.Group();
+    this.funnelStandGroup.position.set(3.82, 0, -0.18);
+
+    const fBase = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.24, 0.04, 24), darkMetal);
+    fBase.position.y = 0.02;
+    const fPost = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.86, 12), chrome);
+    fPost.position.set(-0.12, 0.44, 0);
+    const fRing = new THREE.Mesh(new THREE.TorusGeometry(0.14, 0.014, 10, 28), darkMetal);
+    fRing.rotation.x = Math.PI / 2;
+    fRing.position.set(0, 0.72, 0);
+
+    const funnelConePts = [
+      new THREE.Vector2(0.022, 0.0),
+      new THREE.Vector2(0.025, 0.22),
+      new THREE.Vector2(0.19, 0.50)
+    ];
+    const restFunnelGlass = new THREE.Mesh(
+      new THREE.LatheGeometry(funnelConePts, 32),
+      this._createGlassMaterial(0.24)
+    );
+    restFunnelGlass.position.set(0, 0.42, 0);
+
+    this.restFilterPaperMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.92, side: THREE.DoubleSide });
+    const restPaper = new THREE.Mesh(
+      new THREE.ConeGeometry(0.165, 0.25, 18, 1, true),
+      this.restFilterPaperMat
+    );
+    restPaper.rotation.x = Math.PI;
+    restPaper.position.set(0, 0.78, 0);
+
+    const fHit = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.25, 0.25, 1.0, 12),
+      new THREE.MeshBasicMaterial({ visible: false })
+    );
+    fHit.position.y = 0.52;
+    fHit.userData = { action: 'filter', tip: 'Воронка с бумажным фильтром: нажмите, чтобы отфильтровать осадок' };
+    this.interactables.push(fHit);
+
+    this.funnelStandGroup.add(fBase, fPost, fRing, restFunnelGlass, restPaper, fHit);
+    this.scene.add(this.funnelStandGroup);
+
+    // Активная воронка над горлышком сосуда во время фильтрования
+    this.filterActiveGroup = new THREE.Group();
+    this.filterActiveGroup.visible = false;
+    const actFunnelGlass = new THREE.Mesh(new THREE.LatheGeometry(funnelConePts, 32), this._createGlassMaterial(0.26));
+    this.actFilterPaperMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.92, side: THREE.DoubleSide });
+    const actPaper = new THREE.Mesh(new THREE.ConeGeometry(0.165, 0.25, 18, 1, true), this.actFilterPaperMat);
+    actPaper.rotation.x = Math.PI;
+    actPaper.position.y = 0.36;
+    this.filterFiltrateStream = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.012, 0.009, 0.36, 10),
+      new THREE.MeshPhysicalMaterial({ color: '#dff2fc', transparent: true, opacity: 0.72, roughness: 0.05 })
+    );
+    this.filterFiltrateStream.position.y = -0.16;
+    this.filterActiveGroup.add(actFunnelGlass, actPaper, this.filterFiltrateStream);
+    this.scene.add(this.filterActiveGroup);
+
+    // Электронные аналитические весы (0,01 г) на Столе 2
+    this.balanceGroup = new THREE.Group();
+    const balX = 6.08;
+    const balZ = 0.32;
+    const balBody = new THREE.Mesh(
+      new THREE.BoxGeometry(0.62, 0.14, 0.56),
+      new THREE.MeshStandardMaterial({ color: '#f8fafc', roughness: 0.32, metalness: 0.06 })
+    );
+    balBody.position.set(balX, 0.07, balZ);
+    balBody.castShadow = true;
+
+    const balNeck = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.05, 18), darkMetal);
+    balNeck.position.set(balX, 0.155, balZ - 0.03);
+
+    const balPan = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.21, 0.022, 32), chrome);
+    balPan.position.set(balX, 0.185, balZ - 0.03);
+    balPan.castShadow = true;
+
+    this.balCanvas = document.createElement('canvas');
+    this.balCanvas.width = 256;
+    this.balCanvas.height = 128;
+    this.balCtx = this.balCanvas.getContext('2d');
+    this._drawLcdCanvas(this.balCtx, '#0f172a', '#38bdf8', 'МАССА НЕТТО', '0,00 г', 'TARE OK');
+    this.balTex = new THREE.CanvasTexture(this.balCanvas);
+    this.balTex.colorSpace = THREE.SRGBColorSpace;
+
+    const balScreen = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.46, 0.11),
+      new THREE.MeshBasicMaterial({ map: this.balTex })
+    );
+    balScreen.rotation.x = -Math.PI / 5;
+    balScreen.position.set(balX, 0.115, balZ + 0.265);
+
+    const balHit = new THREE.Mesh(
+      new THREE.BoxGeometry(0.68, 0.32, 0.62),
+      new THREE.MeshBasicMaterial({ visible: false })
+    );
+    balHit.position.set(balX, 0.16, balZ);
+    balHit.userData = { action: 'weigh', tip: 'Электронные весы (0,01 г): нажмите, чтобы зафиксировать массу смеси' };
+    this.interactables.push(balHit);
+
+    this.balanceGroup.add(balBody, balNeck, balPan, balScreen, balHit);
+    this.scene.add(this.balanceGroup);
+
+    // 6. СТОЛ 3 (X = -5.0): Муфельная печь ПМ-1000 (до 950 °C) + керамический подиум + Электролизёр DC 12 В
+    const mfX = -4.75;
+    const mfZ = -0.42;
+    this.muffleGroup = new THREE.Group();
+    this.muffleGroup.position.set(mfX, 0, mfZ);
+
+    const steelMat = new THREE.MeshStandardMaterial({ color: '#334155', roughness: 0.44, metalness: 0.45 });
+    const lightSteelMat = new THREE.MeshStandardMaterial({ color: '#e2e8f0', roughness: 0.38, metalness: 0.22 });
+
+    // Полый корпус муфельной печи из 5 теплоизолированных стенок (открыт спереди в камеру накала!)
+    const mfBot = new THREE.Mesh(new THREE.BoxGeometry(1.52, 0.36, 1.12), steelMat);
+    mfBot.position.set(0, 0.18, 0);
+    mfBot.castShadow = true;
+
+    const mfTop = new THREE.Mesh(new THREE.BoxGeometry(1.52, 0.28, 1.12), steelMat);
+    mfTop.position.set(0, 1.32, 0);
+    mfTop.castShadow = true;
+
+    const mfBack = new THREE.Mesh(new THREE.BoxGeometry(1.52, 0.82, 0.22), steelMat);
+    mfBack.position.set(0, 0.77, -0.45);
+
+    const mfLeftWall = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.82, 0.92), steelMat);
+    mfLeftWall.position.set(-0.64, 0.77, 0.08);
+    mfLeftWall.castShadow = true;
+
+    // Правый блок автоматики и ПИД-терморегулятора
+    const mfRightCtrl = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.82, 0.96), lightSteelMat);
+    mfRightCtrl.position.set(0.54, 0.77, 0.08);
+    mfRightCtrl.castShadow = true;
+
+    // Вытяжной патрубок сверху муфельной печи
+    const mfChimney = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.075, 0.20, 18), darkMetal);
+    mfChimney.position.set(-0.10, 1.54, -0.15);
+
+    // Внутренняя шамотная камера накала (X центр = -0.10 локально, т.е. -4.85 в мире; под на y = 0.38)
+    this.muffleChamberMat = new THREE.MeshStandardMaterial({
+      color: '#d6d3d1',
+      emissive: '#ff4500',
+      emissiveIntensity: 0,
+      roughness: 0.88,
+      side: THREE.BackSide
+    });
+    const mfChamber = new THREE.Mesh(new THREE.BoxGeometry(0.84, 0.76, 0.82), this.muffleChamberMat);
+    mfChamber.position.set(-0.10, 0.77, 0.06);
+
+    // Керамический под (дно камеры) и спирали фехралевых нагревателей по бокам
+    this.muffleCoilMat = new THREE.MeshStandardMaterial({
+      color: '#57534e',
+      emissive: '#ff6a00',
+      emissiveIntensity: 0,
+      roughness: 0.45,
+      metalness: 0.5
+    });
+    const mfHearth = new THREE.Mesh(
+      new THREE.BoxGeometry(0.80, 0.04, 0.78),
+      new THREE.MeshStandardMaterial({ color: '#e7e5e4', roughness: 0.85 })
+    );
+    mfHearth.position.set(-0.10, 0.40, 0.06);
+    this.muffleGroup.add(mfBot, mfTop, mfBack, mfLeftWall, mfRightCtrl, mfChimney, mfChamber, mfHearth);
+
+    for (let row = 0; row < 3; row++) {
+      for (const side of [-1, 1]) {
+        const coil = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.70, 10), this.muffleCoilMat);
+        coil.rotation.x = Math.PI / 2;
+        coil.position.set(-0.10 + side * 0.39, 0.54 + row * 0.20, 0.06);
+        this.muffleGroup.add(coil);
+      }
+    }
+
+    // Цифровое табло ПИД-контроллера муфельной печи (на правом блоке управления)
+    this.muffleCanvas = document.createElement('canvas');
+    this.muffleCanvas.width = 256;
+    this.muffleCanvas.height = 128;
+    this.muffleCtx = this.muffleCanvas.getContext('2d');
+    this._drawLcdCanvas(this.muffleCtx, '#1c0a05', '#fb923c', 'МУФЕЛЬ ПМ-1000', 'ВЫКЛ', 'КАМЕРА: 22 °C');
+    this.muffleTex = new THREE.CanvasTexture(this.muffleCanvas);
+    this.muffleTex.colorSpace = THREE.SRGBColorSpace;
+
+    const mfScreen = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.36, 0.19),
+      new THREE.MeshBasicMaterial({ map: this.muffleTex })
+    );
+    mfScreen.position.set(0.54, 0.96, 0.565);
+
+    const mfBtnRed = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.032, 0.032, 0.03, 16),
+      new THREE.MeshStandardMaterial({ color: '#ea580c', emissive: '#ea580c', emissiveIntensity: 0.35 })
+    );
+    mfBtnRed.rotation.x = Math.PI / 2;
+    mfBtnRed.position.set(0.54, 0.66, 0.565);
+    this.muffleGroup.add(mfScreen, mfBtnRed);
+
+    // Откидная/распашная теплоизолированная дверца на левых петлях со смотровым кварцевым окошком
+    this.muffleDoorPivot = new THREE.Group();
+    this.muffleDoorPivot.position.set(-0.56, 0.77, 0.54);
+
+    const doorPlate = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.84, 0.10), lightSteelMat);
+    doorPlate.position.set(0.46, 0, 0.04);
+    doorPlate.castShadow = true;
+
+    const doorBrick = new THREE.Mesh(
+      new THREE.BoxGeometry(0.74, 0.66, 0.12),
+      new THREE.MeshStandardMaterial({ color: '#f5f5f4', roughness: 0.92 })
+    );
+    doorBrick.position.set(0.46, 0, -0.05);
+
+    this.muffleWindowMat = new THREE.MeshBasicMaterial({ color: '#1e293b' });
+    const doorWindow = new THREE.Mesh(new THREE.PlaneGeometry(0.18, 0.14), this.muffleWindowMat);
+    doorWindow.position.set(0.46, 0.12, 0.095);
+
+    const doorHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.34, 12), darkMetal);
+    doorHandle.position.set(0.84, 0, 0.14);
+
+    this.muffleDoorPivot.add(doorPlate, doorBrick, doorWindow, doorHandle);
+    this.muffleGroup.add(this.muffleDoorPivot);
+
+    // Огнеупорная шамотная подставка перед муфельной печью (для остывания тигля / электролиза на Столе 3)
+    const coolPad = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.44, 0.46, 0.06, 32),
+      new THREE.MeshStandardMaterial({ color: '#d6d3d1', roughness: 0.85 })
+    );
+    coolPad.position.set(-0.10, 0.03, 0.96);
+    coolPad.receiveShadow = true;
+    this.muffleGroup.add(coolPad);
+
+    const mfHit = new THREE.Mesh(
+      new THREE.BoxGeometry(1.56, 1.48, 1.18),
+      new THREE.MeshBasicMaterial({ visible: false })
+    );
+    mfHit.position.set(0, 0.74, 0);
+    mfHit.userData = { action: 'muffle', tip: 'Муфельная печь ПМ-1000: нажмите для выбора режима прокаливания (Выкл → 600 °C → 950 °C)' };
+    this.interactables.push(mfHit);
+    this.muffleGroup.add(mfHit);
+    this.scene.add(this.muffleGroup);
+
+    // 7. Переносной блок питания электролиза DC 12 В + погружные графитовые электроды
+    // БП аккуратно стоит на Столе 3 в покое, а при включении электролиза устанавливается прямо рядом с активным сосудом на ТЕКУЩЕМ столе!
+    this.electrolysisGroup = new THREE.Group();
+    this.psuUnitGroup = new THREE.Group();
+    this.psuUnitGroup.position.set(-6.18, 0, 0.28);
+
+    const psuBox = new THREE.Mesh(
+      new THREE.BoxGeometry(0.56, 0.38, 0.42),
+      new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.45, metalness: 0.35 })
+    );
+    psuBox.position.set(0, 0.19, 0);
+    psuBox.castShadow = true;
+
+    this.psuCanvas = document.createElement('canvas');
+    this.psuCanvas.width = 256;
+    this.psuCanvas.height = 128;
+    this.psuCtx = this.psuCanvas.getContext('2d');
+    this._drawLcdCanvas(this.psuCtx, '#062e22', '#34d399', 'DC 12.0 В', '0.00 А', 'ЭЛЕКТРОЛИЗ');
+    this.psuTex = new THREE.CanvasTexture(this.psuCanvas);
+    this.psuTex.colorSpace = THREE.SRGBColorSpace;
+
+    const psuScreen = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.42, 0.21),
+      new THREE.MeshBasicMaterial({ map: this.psuTex })
+    );
+    psuScreen.position.set(0, 0.23, 0.212);
+
+    const termBlack = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.022, 0.022, 0.05, 14),
+      new THREE.MeshStandardMaterial({ color: '#0f172a', roughness: 0.4 })
+    );
+    termBlack.rotation.x = Math.PI / 2;
+    termBlack.position.set(-0.13, 0.08, 0.22);
+
+    const termRed = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.022, 0.022, 0.05, 14),
+      new THREE.MeshStandardMaterial({ color: '#dc2626', roughness: 0.4 })
+    );
+    termRed.rotation.x = Math.PI / 2;
+    termRed.position.set(0.13, 0.08, 0.22);
+
+    const psuHit = new THREE.Mesh(
+      new THREE.BoxGeometry(0.62, 0.45, 0.48),
+      new THREE.MeshBasicMaterial({ visible: false })
+    );
+    psuHit.position.set(0, 0.22, 0);
+    psuHit.userData = { action: 'electrolysis', tip: 'Источник постоянного тока 12 В (нажмите для вкл/выкл электролиза в текущем сосуде)' };
+    this.interactables.push(psuHit);
+
+    this.psuUnitGroup.add(psuBox, psuScreen, termBlack, termRed, psuHit);
+
+    // Держатель и два погружных графитовых электрода (опускаются ТОЛЬКО в активный сосуд при electrolysisOn!)
+    this.electrodeRig = new THREE.Group();
+    this.electrodeRig.visible = false;
+    const elBridge = new THREE.Mesh(
+      new THREE.BoxGeometry(0.28, 0.045, 0.09),
+      new THREE.MeshStandardMaterial({ color: '#334155', roughness: 0.6 })
+    );
+    this.cathodeMat = new THREE.MeshStandardMaterial({ color: '#27272a', roughness: 0.55, metalness: 0.35 });
+    this.anodeMat = new THREE.MeshStandardMaterial({ color: '#27272a', roughness: 0.65, metalness: 0.25 });
+
+    this.cathodeMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.019, 0.019, 0.85, 16), this.cathodeMat);
+    this.cathodeMesh.position.set(-0.075, -0.42, 0);
+    this.anodeMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.019, 0.019, 0.85, 16), this.anodeMat);
+    this.anodeMesh.position.set(0.075, -0.42, 0);
+
+    const pinBlack = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.06, 12), new THREE.MeshStandardMaterial({ color: '#0f172a' }));
+    pinBlack.position.set(-0.075, 0.04, 0);
+    const pinRed = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.06, 12), new THREE.MeshStandardMaterial({ color: '#dc2626' }));
+    pinRed.position.set(0.075, 0.04, 0);
+
+    this.electrodeRig.add(elBridge, this.cathodeMesh, this.anodeMesh, pinBlack, pinRed);
+
+    this.wireCathodeMesh = null;
+    this.wireAnodeMesh = null;
+    this.electrolysisGroup.add(this.psuUnitGroup, this.electrodeRig);
+    this.scene.add(this.electrolysisGroup);
+
+    // 8. Лабораторная УФ-лампа Вуда (λ = 365 нм) для возбуждения фотолюминесценции квантовых точек и кристаллофосфоров
+    this.uvLampGroup = new THREE.Group();
+    this.uvLampGroup.visible = false;
+
+    const uvHood = new THREE.Mesh(
+      new THREE.BoxGeometry(0.76, 0.09, 0.26),
+      new THREE.MeshStandardMaterial({ color: '#1e1b4b', roughness: 0.4, metalness: 0.55 })
+    );
+    this.uvTubeMat = new THREE.MeshStandardMaterial({
+      color: '#6d28d9',
+      emissive: '#9333ea',
+      emissiveIntensity: 2.4,
+      roughness: 0.2
+    });
+    const uvTube = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.032, 0.68, 16), this.uvTubeMat);
+    uvTube.rotation.z = Math.PI / 2;
+    uvTube.position.y = -0.048;
+
+    const uvConeGeo = new THREE.ConeGeometry(0.95, 1.9, 28, 1, true);
+    this.uvBeamMat = new THREE.MeshBasicMaterial({
+      color: '#7c3aed',
+      transparent: true,
+      opacity: 0.075,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+    const uvCone = new THREE.Mesh(uvConeGeo, this.uvBeamMat);
+    uvCone.position.y = -0.98;
+
+    this.uvLampGroup.add(uvHood, uvTube, uvCone);
+    this.scene.add(this.uvLampGroup);
+
+    // 9. Стойка дополнительных рабочих сосудов (позволяет держать до 3 колб/пробирок одновременно и сливать их!)
+    this._buildAuxVesselRack();
+  }
+
+  _buildAuxVesselRack() {
+    this.auxRackGroup = new THREE.Group();
+    const baseMat = new THREE.MeshStandardMaterial({ color: '#334155', roughness: 0.55, metalness: 0.25 });
+    const rackPad = new THREE.Mesh(new THREE.BoxGeometry(1.18, 0.04, 0.56), baseMat);
+    rackPad.position.set(0, 0.02, 0);
+    rackPad.receiveShadow = true;
+    this.auxRackGroup.add(rackPad);
+
+    const pOuter = new THREE.MeshPhysicalMaterial({ color: '#f8fafc', roughness: 0.18, clearcoat: 0.8 });
+    const glassAux = this._createGlassMaterial(0.18);
+
+    this.auxSlotUnits = [];
+    for (let u = 0; u < 2; u++) {
+      const slotGrp = new THREE.Group();
+      slotGrp.position.set(u === 0 ? -0.30 : 0.30, 0.04, 0);
+
+      // Кольцо-держатель для пробирки/круглодонной колбы
+      const holderRing = new THREE.Mesh(
+        new THREE.TorusGeometry(0.145, 0.012, 8, 22),
+        baseMat
+      );
+      holderRing.rotation.x = Math.PI / 2;
+      holderRing.position.y = 0.28;
+      const holderStem = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.014, 0.28, 10), baseMat);
+      holderStem.position.set(0, 0.14, -0.145);
+      slotGrp.add(holderRing, holderStem);
+
+      const liqMat = new THREE.MeshPhysicalMaterial({
+        color: '#dff2fc',
+        emissive: '#000000',
+        emissiveIntensity: 0,
+        transparent: true,
+        opacity: 0,
+        roughness: 0.08,
+        side: THREE.DoubleSide
+      });
+
+      const shells = {};
+      const liqMeshes = {};
+      for (const kind of ['flask', 'round', 'tube', 'beaker', 'evap', 'crucible']) {
+        const isPorc = kind === 'evap' || kind === 'crucible';
+        const outerPts = this._vesselProfile(kind, 0.014).map(([r, y]) => new THREE.Vector2(r * 0.56, y * 0.56));
+        const shell = new THREE.Mesh(new THREE.LatheGeometry(outerPts, 28), isPorc ? pOuter : glassAux);
+        shell.visible = kind === 'tube';
+        slotGrp.add(shell);
+        shells[kind] = shell;
+
+        const rAvg = this._innerRadiusAt(kind, this._liquidMaxHeight(kind) * 0.45) * 0.52;
+        const lMesh = new THREE.Mesh(new THREE.CylinderGeometry(rAvg * 0.92, rAvg, 1, 22), liqMat);
+        lMesh.visible = false;
+        slotGrp.add(lMesh);
+        liqMeshes[kind] = lMesh;
+      }
+
+      const haloMat = new THREE.SpriteMaterial({
+        map: this._createHotSpotTexture(),
+        color: '#22ff66',
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      const halo = new THREE.Sprite(haloMat);
+      halo.position.set(0, 0.24, 0);
+      halo.scale.set(0.75, 0.75, 1);
+      halo.visible = false;
+      slotGrp.add(halo);
+
+      // Значок номера сосуда (①, ②, ③)
+      const badgeCanvas = document.createElement('canvas');
+      badgeCanvas.width = 64;
+      badgeCanvas.height = 64;
+      const badgeTex = new THREE.CanvasTexture(badgeCanvas);
+      badgeTex.colorSpace = THREE.SRGBColorSpace;
+      const badgeSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: badgeTex, transparent: true }));
+      badgeSprite.scale.set(0.18, 0.18, 1);
+      badgeSprite.position.set(0, 0.86, 0);
+      slotGrp.add(badgeSprite);
+
+      const hit = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.24, 0.24, 0.85, 12),
+        new THREE.MeshBasicMaterial({ visible: false })
+      );
+      hit.position.y = 0.42;
+      hit.userData = { action: 'slot:1', tip: 'Нажмите, чтобы переключиться на этот сосуд' };
+      this.interactables.push(hit);
+      slotGrp.add(hit);
+
+      this.auxRackGroup.add(slotGrp);
+      this.auxSlotUnits.push({
+        group: slotGrp,
+        holderRing,
+        holderStem,
+        shells,
+        liqMeshes,
+        liqMat,
+        halo,
+        haloMat,
+        badgeCanvas,
+        badgeTex,
+        badgeSprite,
+        hit,
+        lastBadge: ''
+      });
+    }
+    this.scene.add(this.auxRackGroup);
+  }
+
+  _getAuxRackPosForBench(bench) {
+    if (bench === 2) return new THREE.Vector3(3.15, 0, 0.40);
+    if (bench === 3) return new THREE.Vector3(-6.22, 0, -0.45);
+    return new THREE.Vector3(-2.35, 0, -0.18);
+  }
+
+  _getPsuPosForBench(bench, electrolysisOn) {
+    if (!electrolysisOn) {
+      // В выключенном состоянии БП аккуратно стоит на Столе 3
+      return new THREE.Vector3(-6.18, 0, 0.28);
+    }
+    if (bench === 2) return new THREE.Vector3(4.14, 0, 0.42);
+    if (bench === 3) return new THREE.Vector3(-6.18, 0, 0.28);
+    return new THREE.Vector3(-1.08, 0, 0.42);
+  }
+
+  _getVesselWorkstationPos(state) {
+    const bench = state?.bench || 1;
+    const kind = state?.vessel || 'flask';
+    if (bench === 2) {
+      // Стол 2: непосредственно на стеклокерамической платформе магнитной мешалки с подогревом!
+      return new THREE.Vector3(4.90, kind === 'tube' ? 0.24 : 0.208, 0.01);
+    }
+    if (bench === 3) {
+      if ((state?.muffleLvl || 0) > 0) {
+        // Внутри раскалённой шамотной камеры муфельной печи ПМ-1000!
+        return new THREE.Vector3(-4.85, 0.425, -0.36);
+      }
+      // На огнеупорном подиуме перед муфельной печью (остывание или электролиз)
+      return new THREE.Vector3(-4.85, 0.062, 0.54);
+    }
+    // Стол 1: на треножнике над спиртовкой (или в лапке штатива для пробирки)
+    return new THREE.Vector3(this.vesselX, kind === 'tube' ? 0.92 : this.vesselBaseY, 0);
+  }
+
+  _rebuildElectrodeWires(kind, vPos, psuBasePos) {
+    if (this.wireCathodeMesh) {
+      this.electrolysisGroup.remove(this.wireCathodeMesh);
+      this.wireCathodeMesh.geometry.dispose();
+      this.wireCathodeMesh = null;
+    }
+    if (this.wireAnodeMesh) {
+      this.electrolysisGroup.remove(this.wireAnodeMesh);
+      this.wireAnodeMesh.geometry.dispose();
+      this.wireAnodeMesh = null;
+    }
+    const pos = vPos || this.curVesselPos || new THREE.Vector3(-0.35, 1.18, 0);
+    const pBase = psuBasePos || this.psuUnitGroup?.position || new THREE.Vector3(-6.18, 0, 0.28);
+    const topY = pos.y + this._mouthHeight(kind) + 0.05;
+    const elH = (kind === 'evap' || kind === 'crucible') ? 0.46 : 0.88;
+    this.cathodeMesh.scale.y = elH / 0.85;
+    this.cathodeMesh.position.y = -elH / 2;
+    this.anodeMesh.scale.y = elH / 0.85;
+    this.anodeMesh.position.y = -elH / 2;
+    this.electrodeRig.position.set(pos.x, topY, pos.z);
+
+    const psuX = pBase.x;
+    const psuZ = pBase.z + 0.22;
+    const midX = (psuX + pos.x) * 0.5;
+    const cCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(psuX - 0.13, 0.08, psuZ),
+      new THREE.Vector3(midX - 0.12, topY + 0.22, (psuZ + pos.z) * 0.5),
+      new THREE.Vector3(pos.x - 0.075, topY + 0.06, pos.z)
+    ]);
+    const aCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(psuX + 0.13, 0.08, psuZ),
+      new THREE.Vector3(midX + 0.09, topY + 0.26, (psuZ + pos.z) * 0.5 - 0.05),
+      new THREE.Vector3(pos.x + 0.075, topY + 0.06, pos.z)
+    ]);
+    this.wireCathodeMesh = new THREE.Mesh(
+      new THREE.TubeGeometry(cCurve, 24, 0.011, 8, false),
+      new THREE.MeshStandardMaterial({ color: '#0f172a', roughness: 0.6 })
+    );
+    this.wireAnodeMesh = new THREE.Mesh(
+      new THREE.TubeGeometry(aCurve, 24, 0.011, 8, false),
+      new THREE.MeshStandardMaterial({ color: '#dc2626', roughness: 0.5 })
+    );
+    this.electrolysisGroup.add(this.wireCathodeMesh, this.wireAnodeMesh);
+  }
+
+  _buildAnimatedProps() {
+    // 1. Наклоняющаяся склянка со струёй жидкости при приливании
+    this.pourBottleGroup = new THREE.Group();
+    this.pourBottleGroup.visible = false;
+
+    const bBody = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.18, 0.18, 0.48, 22),
+      new THREE.MeshPhysicalMaterial({ color: '#92400e', transparent: true, opacity: 0.68, roughness: 0.18 })
+    );
+    const bNeck = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.075, 0.10, 0.16, 18),
+      new THREE.MeshPhysicalMaterial({ color: '#92400e', transparent: true, opacity: 0.68, roughness: 0.18 })
+    );
+    bNeck.position.y = 0.30;
+    this.pourBottleGroup.add(bBody, bNeck);
+    this.scene.add(this.pourBottleGroup);
+
+    // 1б. 3D-сосуд для переливания содержимого из одной колбы/пробирки в другую!
+    this.pourVesselGroup = new THREE.Group();
+    this.pourVesselGroup.visible = false;
+    this.pourVesselShells = {};
+    this.pourVesselLiqMat = new THREE.MeshPhysicalMaterial({
+      color: '#dff2fc',
+      emissive: '#000000',
+      emissiveIntensity: 0,
+      transparent: true,
+      opacity: 0.78,
+      roughness: 0.08,
+      side: THREE.DoubleSide
+    });
+    const pvGlass = this._createGlassMaterial(0.20);
+    const pvPorc = new THREE.MeshPhysicalMaterial({ color: '#f8fafc', roughness: 0.18, clearcoat: 0.8 });
+    for (const kind of ['flask', 'round', 'tube', 'beaker', 'evap', 'crucible']) {
+      const isPorc = kind === 'evap' || kind === 'crucible';
+      const subG = new THREE.Group();
+      const outerPts = this._vesselProfile(kind, 0.014).map(([r, y]) => new THREE.Vector2(r * 0.62, y * 0.62));
+      const mH = this._mouthHeight(kind) * 0.62;
+      const sh = new THREE.Mesh(new THREE.LatheGeometry(outerPts, 28), isPorc ? pvPorc : pvGlass);
+      sh.position.y = -mH * 0.75;
+      const rMid = this._innerRadiusAt(kind, this._liquidMaxHeight(kind) * 0.4) * 0.56;
+      const liqCyl = new THREE.Mesh(new THREE.CylinderGeometry(rMid * 0.85, rMid, mH * 0.55, 20), this.pourVesselLiqMat);
+      liqCyl.position.y = -mH * 0.45;
+      subG.add(sh, liqCyl);
+      subG.visible = kind === 'tube';
+      this.pourVesselGroup.add(subG);
+      this.pourVesselShells[kind] = subG;
+    }
+    this.scene.add(this.pourVesselGroup);
+
+    this.streamMat = new THREE.MeshPhysicalMaterial({
+      color: '#dff2fc',
+      transparent: true,
+      opacity: 0.72,
+      roughness: 0.05
+    });
+    this.streamMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.016, 1, 12), this.streamMat);
+    this.streamMesh.visible = false;
+    this.scene.add(this.streamMesh);
+
+    // 2. Три детализированных инструмента для горения: лучина, нихромовая петля и тигельные щипцы
+    this.propGroup = new THREE.Group();
+    this.propGroup.visible = false;
+    this.scene.add(this.propGroup);
+
+    // 2а. Деревянная лучина с обугленным тлеющим кончиком и вертикальным язычком пламени
+    this.splintGroup = new THREE.Group();
+    const woodStick = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.013, 0.016, 0.92, 10),
+      new THREE.MeshStandardMaterial({ color: '#deb887', roughness: 0.78 })
+    );
+    woodStick.rotation.z = -Math.PI / 3.1;
+    woodStick.position.set(0.39, 0.24, 0);
+
+    const splintChar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.011, 0.0135, 0.11, 10),
+      new THREE.MeshStandardMaterial({ color: '#1c1917', roughness: 0.92 })
+    );
+    splintChar.rotation.z = -Math.PI / 3.1;
+    splintChar.position.set(0.04, 0.025, 0);
+
+    this.splintEmberMat = new THREE.MeshStandardMaterial({
+      color: '#292524',
+      emissive: '#ff3b00',
+      emissiveIntensity: 1.4,
+      roughness: 0.85
+    });
+    const splintEmber = new THREE.Mesh(new THREE.SphereGeometry(0.016, 12, 10), this.splintEmberMat);
+    splintEmber.position.set(0, 0, 0);
+
+    this.splintFlameMat = this._createOrganicFlameMaterial(0.22);
+    this.splintFlameMesh = new THREE.Mesh(this._createTeardropFlameGeo(0.048, 0.22, 20), this.splintFlameMat);
+    this.splintFlameMesh.position.set(0, -0.01, 0);
+    this.splintFlameMesh.renderOrder = 7;
+
+    this.splintGroup.add(woodStick, splintChar, splintEmber, this.splintFlameMesh);
+    this.propGroup.add(this.splintGroup);
+
+    // 2б. Нихромовая петля в стеклянном держателе
+    this.loopGroup = new THREE.Group();
+    const glassRod = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.018, 0.020, 0.68, 12),
+      this._createGlassMaterial(0.32)
+    );
+    glassRod.rotation.z = -Math.PI / 2.35;
+    glassRod.position.set(0.48, 0.12, 0);
+
+    this.loopWireMat = new THREE.MeshStandardMaterial({
+      color: '#94a3b8',
+      metalness: 0.85,
+      roughness: 0.3,
+      emissive: '#ff4d00',
+      emissiveIntensity: 0
+    });
+    const wireShaft = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.18, 8), this.loopWireMat);
+    wireShaft.rotation.z = -Math.PI / 2.35;
+    wireShaft.position.set(0.09, 0.022, 0);
+
+    const wireRing = new THREE.Mesh(new THREE.TorusGeometry(0.028, 0.0055, 8, 20), this.loopWireMat);
+    wireRing.position.set(0, 0, 0);
+
+    this.loopGroup.add(glassRod, wireShaft, wireRing);
+    this.propGroup.add(this.loopGroup);
+
+    // 2в. Стальные тигельные щипцы с раскаляемым образцом металла и ореолом горения
+    this.tongsGroup = new THREE.Group();
+    const tongSteel = new THREE.MeshStandardMaterial({ color: '#334155', metalness: 0.82, roughness: 0.32 });
+    const jawA = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.015, 0.78, 10), tongSteel);
+    jawA.rotation.z = -Math.PI / 2.3 + 0.06;
+    jawA.position.set(0.42, 0.11, 0.012);
+    const jawB = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.015, 0.78, 10), tongSteel);
+    jawB.rotation.z = -Math.PI / 2.3 - 0.06;
+    jawB.position.set(0.42, 0.08, -0.012);
+
+    this.tongsSampleMat = new THREE.MeshStandardMaterial({
+      color: '#cbd5e1',
+      metalness: 0.78,
+      roughness: 0.32,
+      emissive: '#ffffff',
+      emissiveIntensity: 0
+    });
+    this.tongsSampleMesh = new THREE.Mesh(
+      new THREE.TorusGeometry(0.045, 0.012, 10, 22, Math.PI * 1.65),
+      this.tongsSampleMat
+    );
+    this.tongsSampleMesh.position.set(0, 0, 0);
+
+    this.tongsFlameMat = this._createOrganicFlameMaterial(0.28);
+    this.tongsFlameMesh = new THREE.Mesh(this._createTeardropFlameGeo(0.075, 0.28, 20), this.tongsFlameMat);
+    this.tongsFlameMesh.position.set(0, -0.02, 0);
+    this.tongsFlameMesh.renderOrder = 7;
+
+    this.tongsGlareMat = new THREE.SpriteMaterial({
+      map: this._createHotSpotTexture(),
+      color: '#ffffff',
+      transparent: true,
+      opacity: 0,
+      depthWrite: false
+    });
+    this.tongsGlareSprite = new THREE.Sprite(this.tongsGlareMat);
+    this.tongsGlareSprite.scale.set(0.75, 0.75, 1);
+
+    this.tongsGroup.add(jawA, jawB, this.tongsSampleMesh, this.tongsFlameMesh, this.tongsGlareSprite);
+    this.propGroup.add(this.tongsGroup);
+
+    // 2г. Расширяющаяся голубая волна хлопка водорода H₂
+    this.h2PopMat = new THREE.MeshBasicMaterial({
+      color: '#60a5fa',
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    this.h2PopMesh = new THREE.Mesh(new THREE.SphereGeometry(0.12, 18, 14), this.h2PopMat);
+    this.h2PopMesh.visible = false;
+    this.scene.add(this.h2PopMesh);
+  }
+
+  _buildParticles() {
+    // 1. Пузырьки газа и кипения в сосуде (InstancedMesh)
+    const bubGeo = new THREE.SphereGeometry(1, 12, 12);
+    const bubMat = new THREE.MeshPhysicalMaterial({
+      color: '#ffffff',
+      transparent: true,
+      opacity: 0.58,
+      roughness: 0.05,
+      ior: 1.1,
+      envMapIntensity: 1.6
+    });
+    this.bubbleInst = new THREE.InstancedMesh(bubGeo, bubMat, 220);
+    this.bubbleInst.count = 0;
+    this.bubbleInst.renderOrder = 5;
+    this.scene.add(this.bubbleInst);
+
+    // 2. Хлопья осадка (InstancedMesh)
+    const flkGeo = new THREE.DodecahedronGeometry(1, 0);
+    this.flakeMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.85 });
+    this.flakeInst = new THREE.InstancedMesh(flkGeo, this.flakeMat, 120);
+    this.flakeInst.count = 0;
+    this.flakeInst.renderOrder = 4;
+    this.scene.add(this.flakeInst);
+
+    // 3. Пузырьки в пробирке-газометре
+    this.troughBubbleInst = new THREE.InstancedMesh(bubGeo, bubMat, 40);
+    this.troughBubbleInst.count = 0;
+    this.scene.add(this.troughBubbleInst);
+
+    // 4. Клубы пара / бурого газа NO₂ / дыма горения
+    const steamTex = this._createSoftCircleTexture();
+    for (let i = 0; i < 26; i++) {
+      const mat = new THREE.SpriteMaterial({
+        map: steamTex,
+        color: '#f1f5f9',
+        transparent: true,
+        opacity: 0,
+        depthWrite: false
+      });
+      const sp = new THREE.Sprite(mat);
+      sp.visible = false;
+      this.scene.add(sp);
+      this.steamClouds.push({ sprite: sp, life: 0, x: 0, y: 0, z: 0, vx: 0, vy: 0.42, size: 0.2, color: '#f1f5f9' });
+    }
+
+    // 5. Искры и раскалённые микрочастицы горения (Mg, O₂, Fe + Cl₂, калий на воде)
+    const sparkTex = this._createHotSpotTexture();
+    for (let i = 0; i < 34; i++) {
+      const mat = new THREE.SpriteMaterial({
+        map: sparkTex,
+        color: '#fde047',
+        transparent: true,
+        opacity: 0,
+        depthWrite: false
+      });
+      const sp = new THREE.Sprite(mat);
+      sp.visible = false;
+      sp.renderOrder = 8;
+      this.scene.add(sp);
+      this.sparks.push({ sprite: sp, life: 0, maxLife: 1, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, size: 0.05, color: '#fde047' });
+    }
+
+    // 6. Фиолетовый язычок пламени для калия, бегающего по воде
+    this.alkaliFlameMat = this._createOrganicFlameMaterial(0.18);
+    this.alkaliFlameMesh = new THREE.Mesh(this._createTeardropFlameGeo(0.045, 0.18, 16), this.alkaliFlameMat);
+    this.alkaliFlameMesh.visible = false;
+    this.alkaliFlameMesh.renderOrder = 7;
+    this.vesselRoot.add(this.alkaliFlameMesh);
+
+    this._dummy = new THREE.Object3D();
+  }
+
+  _spawnSmokePuff(x, y, z, color = '#e2e8f0', size = 0.14, vy = 0.36) {
+    const free = this.steamClouds.find((c) => c.life <= 0);
+    if (!free) return;
+    free.life = 1.0;
+    free.x = x + (Math.random() - 0.5) * 0.04;
+    free.y = y;
+    free.z = z + (Math.random() - 0.5) * 0.04;
+    free.vx = (Math.random() - 0.5) * 0.09;
+    free.vy = vy;
+    free.size = size;
+    free.color = color;
+  }
+
+  _spawnSparks(x, y, z, count = 10, color = '#fde047', speed = 1.0) {
+    let spawned = 0;
+    for (const sp of this.sparks) {
+      if (sp.life > 0) continue;
+      const ang = Math.random() * Math.PI * 2;
+      const elev = (Math.random() - 0.22) * Math.PI * 0.7;
+      const v = (0.35 + Math.random() * 0.95) * speed;
+      sp.maxLife = 0.45 + Math.random() * 0.55;
+      sp.life = sp.maxLife;
+      sp.x = x + (Math.random() - 0.5) * 0.03;
+      sp.y = y + (Math.random() - 0.5) * 0.03;
+      sp.z = z + (Math.random() - 0.5) * 0.03;
+      sp.vx = Math.cos(ang) * Math.cos(elev) * v;
+      sp.vy = Math.sin(elev) * v + 0.35 * speed;
+      sp.vz = Math.sin(ang) * Math.cos(elev) * v;
+      sp.size = 0.038 + Math.random() * 0.042;
+      sp.color = color;
+      if (++spawned >= count) break;
+    }
+  }
+
+  _createSoftCircleTexture() {
+    const c = document.createElement('canvas');
+    c.width = 128;
+    c.height = 128;
+    const g = c.getContext('2d');
+    const gr = g.createRadialGradient(64, 64, 6, 64, 64, 62);
+    gr.addColorStop(0, 'rgba(255,255,255,0.85)');
+    gr.addColorStop(0.5, 'rgba(255,255,255,0.32)');
+    gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr;
+    g.fillRect(0, 0, 128, 128);
+    return new THREE.CanvasTexture(c);
+  }
+
+  _bindInteractions() {
+    this.raycaster = new THREE.Raycaster();
+    this.pointer = new THREE.Vector2();
+    let dragging = false;
+    let moved = false;
+    let startX = 0;
+    let startY = 0;
+
+    const updatePointer = (e) => {
+      const rect = this.canvas.getBoundingClientRect();
+      this.pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      this.pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      return rect;
+    };
+
+    this.canvas.addEventListener('pointerdown', (e) => {
+      dragging = true;
+      moved = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      this.wake(1500);
+    });
+
+    window.addEventListener('pointermove', (e) => {
+      if (!this.webglSupported) return;
+      const rect = updatePointer(e);
+      if (dragging) {
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        if (Math.hypot(dx, dy) > 4) moved = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        this.camSpherical.yaw = Math.max(-0.52, Math.min(0.52, this.camSpherical.yaw - dx * 0.0045));
+        this.camSpherical.pitch = Math.max(-0.22, Math.min(0.32, this.camSpherical.pitch + dy * 0.0035));
+        this.wake(1200);
+        this.tipEl.classList.remove('on');
+        return;
+      }
+
+      // Проверка наведения только внутри холста
+      if (
+        e.clientX >= rect.left && e.clientX <= rect.right &&
+        e.clientY >= rect.top && e.clientY <= rect.bottom
+      ) {
+        this.raycaster.setFromCamera(this.pointer, this.camera);
+        const hits = this.raycaster.intersectObjects(this.interactables, false)
+          .filter((h) => this._isObjectVisible(h.object));
+        if (hits.length > 0) {
+          const info = hits[0].object.userData;
+          this.canvas.style.cursor = 'pointer';
+          this.tipEl.textContent = info.tip || '';
+          this.tipEl.style.left = `${e.clientX - rect.left}px`;
+          this.tipEl.style.top = `${e.clientY - rect.top - 14}px`;
+          this.tipEl.classList.add('on');
+        } else {
+          this.canvas.style.cursor = 'grab';
+          this.tipEl.classList.remove('on');
+        }
+      } else {
+        this.tipEl.classList.remove('on');
+      }
+    });
+
+    window.addEventListener('pointerup', (e) => {
+      if (!dragging) return;
+      dragging = false;
+      if (!moved) {
+        updatePointer(e);
+        this.raycaster.setFromCamera(this.pointer, this.camera);
+        const hits = this.raycaster.intersectObjects(this.interactables, false)
+          .filter((h) => this._isObjectVisible(h.object));
+        if (hits.length > 0) {
+          const act = hits[0].object.userData.action;
+          if (act && this.callbacks.onObjectClick) {
+            this.callbacks.onObjectClick(act);
+          }
+        }
+      }
+    });
+
+    this.canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      this.camSpherical.zoom = Math.max(0.68, Math.min(1.38, this.camSpherical.zoom + e.deltaY * 0.0007));
+      this.wake(1200);
+    }, { passive: false });
+
+    this._onResize = () => this.resize();
+    window.addEventListener('resize', this._onResize);
+  }
+
+  _isObjectVisible(obj) {
+    let cur = obj;
+    while (cur) {
+      if (!cur.visible) return false;
+      cur = cur.parent;
+    }
+    return true;
+  }
+
+  setBenchTheme(themeId) {
+    if (!this.webglSupported) return;
+    const T = BENCH_THEMES[themeId] || BENCH_THEMES.classic;
+    this.themeId = themeId;
+    this.baseBgColor = new THREE.Color(T.bg);
+    this.scene.background = this.baseBgColor.clone();
+    this.benchMat.color.set(T.bench);
+
+    // Рисуем текстуру кафельной плитки и карту рельефа
+    const size = 512;
+    const makeTex = (bump) => {
+      const c = document.createElement('canvas');
+      c.width = size;
+      c.height = size;
+      const g = c.getContext('2d');
+      g.fillStyle = bump ? '#303030' : T.grout;
+      g.fillRect(0, 0, size, size);
+      const N = 4;
+      const step = size / N;
+      for (let ix = 0; ix < N; ix++) {
+        for (let iy = 0; iy < N; iy++) {
+          g.fillStyle = bump ? '#e5e5e5' : ((ix + iy) % 2 === 0 ? T.tileBase : T.tileAlt);
+          g.beginPath();
+          g.roundRect(ix * step + 4, iy * step + 4, step - 8, step - 8, 8);
+          g.fill();
+        }
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(16, 4.8);
+      if (!bump) tex.colorSpace = THREE.SRGBColorSpace;
+      return tex;
+    };
+
+    if (this.wallMat.map) this.wallMat.map.dispose();
+    if (this.wallMat.bumpMap) this.wallMat.bumpMap.dispose();
+    this.wallMat.map = makeTex(false);
+    this.wallMat.bumpMap = makeTex(true);
+    this.wallMat.bumpScale = 0.015;
+    this.wallMat.needsUpdate = true;
+    this.wake(800);
+  }
+
+  setCameraPreset(presetId) {
+    if (CAMERA_PRESETS[presetId]) {
+      this.presetId = presetId;
+      this.camSpherical = { yaw: 0, pitch: 0, zoom: 1 };
+      this.wake(2000);
+    }
+  }
+
+  setUvLamp(on) {
+    this.uvLampOn = !!on;
+    this.wake(2600);
+  }
+
+  snapVesselToStation(state) {
+    if (!state) return;
+    const goal = this._getVesselWorkstationPos(state);
+    this.transferAnim.active = false;
+    this.curVesselPos.copy(goal);
+    this._prevSync.bench = state.bench || 1;
+    this._prevSync.muffleActive = (state.muffleLvl || 0) > 0;
+    this._prevSync.vessel = state.vessel;
+    this.wake(1600);
+  }
+
+  triggerVesselPour(sourceKind = 'tube', colorHex = '#dff2fc', glowHex = '') {
+    this.vesselPourAnim = {
+      active: true,
+      t: 0,
+      dur: 1.18,
+      vesselKind: sourceKind || 'tube',
+      color: colorHex || '#dff2fc',
+      glowColor: glowHex || ''
+    };
+    this.pourAnim.active = false;
+    this.pourBottleGroup.visible = false;
+    this.triggerSplash(0.75);
+    this.wake(3200);
+  }
+
+  triggerPour(reagent, isSolid = false) {
+    this.pourAnim = {
+      active: true,
+      t: 0,
+      dur: isSolid ? 0.75 : 1.05,
+      color: reagent.color || '#dff2fc',
+      solid: isSolid,
+      formula: reagent.formula || ''
+    };
+    this.triggerSplash(isSolid ? 0.85 : 0.55);
+    this.wake(3200);
+  }
+
+  triggerSplash(strength = 0.6) {
+    this.slosh.vel += (Math.random() < 0.5 ? -1 : 1) * strength * 3.8;
+    this.wake(3000);
+  }
+
+  triggerFlameTint(hexColor, durationMs = 4500) {
+    this.flameTint = { color: hexColor, until: performance.now() + durationMs };
+    this.wake(durationMs + 600);
+  }
+
+  triggerToolAnimation(kind, extra = {}) {
+    this.toolAnim = { kind, t: 0, dur: extra.dur || 2.25, extra, burstDone: false };
+    if (extra.flashColor) {
+      this.flashEffect = { intensity: extra.flashPower || 8, color: extra.flashColor };
+    }
+    this.wake(3200);
+  }
+
+  setTitrantColor(hexColor) {
+    this.titrantColor = hexColor && hexColor !== '#F8FAFC' ? hexColor : '#dff2fc';
+    if (this.buretteLiqMat) {
+      this.buretteLiqMat.color.set(this.titrantColor);
+    }
+    this.wake(600);
+  }
+
+  triggerBuretteDrop(hexColor) {
+    const col = hexColor && hexColor !== '#F8FAFC' ? hexColor : (this.titrantColor || '#dff2fc');
+    this.dripAnim = { active: true, t: 0, dur: 0.52, color: col };
+    this.triggerSplash(0.28);
+    this.wake(1800);
+  }
+
+  triggerFiltration(cakeColor = '#f8fafc') {
+    this.filterAnim = { active: true, t: 0, dur: 2.1, cakeColor: cakeColor || '#f8fafc' };
+    this.wake(2800);
+  }
+
+  _syncAuxVesselRack(slots, activeSlot, curBench) {
+    if (!this.auxRackGroup || !Array.isArray(this.auxSlotUnits)) return;
+    this.auxRackGroup.position.copy(this._getAuxRackPosForBench(curBench));
+
+    const otherIndices = [];
+    for (let i = 0; i < slots.length; i++) {
+      if (i !== activeSlot && slots[i]) otherIndices.push(i);
+    }
+
+    const slotSymbols = ['①', '②', '③'];
+    for (let u = 0; u < this.auxSlotUnits.length; u++) {
+      const unit = this.auxSlotUnits[u];
+      const slotIdx = otherIndices[u];
+      if (slotIdx === undefined) {
+        unit.group.visible = false;
+        continue;
+      }
+      unit.group.visible = true;
+      const entry = slots[slotIdx];
+      const st = entry.state;
+      const an = entry.analysis;
+      const kind = st?.vessel || 'flask';
+
+      // Показываем нужную форму сосуда и кольцо-держатель для пробирки/круглодонной колбы
+      const needsHolder = kind === 'tube' || kind === 'round';
+      unit.holderRing.visible = needsHolder;
+      unit.holderStem.visible = needsHolder;
+      for (const k of Object.keys(unit.shells)) {
+        unit.shells[k].visible = k === kind;
+        unit.liqMeshes[k].visible = false;
+      }
+
+      // Заполнение жидкостью или сухим люминофором
+      const cap = VESSELS[kind]?.cap || 100;
+      const maxH = this._liquidMaxHeight(kind) * 0.56;
+      const hasSolid = !an.wet && (an.precipitates?.length > 0 || Object.keys(st.amt || {}).some((id) => (st.amt[id] || 0) > 0.05));
+      if (an.wet && an.volume > 0.2) {
+        const lH = Math.max(0.035, Math.min(maxH, (an.volume / cap) * maxH));
+        const lm = unit.liqMeshes[kind];
+        lm.visible = true;
+        lm.scale.set(1, lH, 1);
+        lm.position.y = 0.02 + lH / 2;
+        unit.liqMat.color.set(an.liquidColor || '#dff2fc');
+        unit.liqMat.opacity = Math.max(0.42, an.liquidOpacity || 0.55);
+      } else if (hasSolid) {
+        const lm = unit.liqMeshes[kind];
+        lm.visible = true;
+        lm.scale.set(0.92, 0.045, 0.92);
+        lm.position.y = 0.035;
+        const solidCol = an.precipitates?.[0]?.color || '#f1f5f9';
+        unit.liqMat.color.set(solidCol);
+        unit.liqMat.opacity = 0.95;
+      }
+
+      // Люминесценция дополнительного сосуда (УФ-возбуждение или собственная хемилюминесценция/послесвечение!)
+      const lum = an.luminescence;
+      const uvPow = (this.uvLampOn && lum?.uvIntensity > 0.02) ? lum.uvIntensity : 0;
+      const selfPow = lum?.selfIntensity > 0.02 ? lum.selfIntensity : 0;
+      if (uvPow >= selfPow && uvPow > 0.02) {
+        unit.liqMat.color.set(lum.uvColor);
+        unit.liqMat.opacity = 0.86;
+        unit.liqMat.emissive.set(lum.uvColor);
+        unit.liqMat.emissiveIntensity = uvPow * 1.25;
+        unit.halo.visible = true;
+        unit.haloMat.color.set(lum.uvColor);
+        unit.haloMat.opacity = Math.min(0.65, uvPow * 0.52);
+      } else if (selfPow > 0.02) {
+        unit.liqMat.color.set(lum.selfColor);
+        unit.liqMat.opacity = 0.86;
+        unit.liqMat.emissive.set(lum.selfColor);
+        unit.liqMat.emissiveIntensity = selfPow * 1.25;
+        unit.halo.visible = true;
+        unit.haloMat.color.set(lum.selfColor);
+        unit.haloMat.opacity = Math.min(0.65, selfPow * 0.52);
+      } else {
+        unit.liqMat.emissive.set('#000000');
+        unit.liqMat.emissiveIntensity = 0;
+        unit.halo.visible = false;
+      }
+
+      // Бейдж номера слота и подсказка
+      const sym = slotSymbols[slotIdx] || `${slotIdx + 1}`;
+      const hasAny = an.wet || hasSolid;
+      const badgeKey = `${sym}:${hasAny ? '1' : '0'}`;
+      if (unit.lastBadge !== badgeKey) {
+        unit.lastBadge = badgeKey;
+        const g = unit.badgeCanvas.getContext('2d');
+        g.clearRect(0, 0, 64, 64);
+        g.fillStyle = hasAny ? '#0284c7' : '#334155';
+        g.beginPath();
+        g.arc(32, 32, 26, 0, Math.PI * 2);
+        g.fill();
+        g.lineWidth = 3;
+        g.strokeStyle = '#e0f2fe';
+        g.stroke();
+        g.fillStyle = '#ffffff';
+        g.font = 'bold 30px sans-serif';
+        g.textAlign = 'center';
+        g.textBaseline = 'middle';
+        g.fillText(`${slotIdx + 1}`, 32, 33);
+        unit.badgeTex.needsUpdate = true;
+      }
+      unit.badgeSprite.position.y = Math.max(0.56, this._mouthHeight(kind) * 0.56 + 0.16);
+      unit.hit.userData = {
+        action: `slot:${slotIdx}`,
+        tip: `Сосуд ${sym} (${VESSELS[kind]?.name || kind}${an.wet ? `, ${Math.round(an.volume)} мл` : ''}) — нажмите, чтобы взять в работу`
+      };
+    }
+  }
+
+  wake(ms = 2200) {
+    this.awakeUntil = Math.max(this.awakeUntil, performance.now() + ms);
+    if (this.sleeping && this.webglSupported) {
+      this.sleeping = false;
+      this.lastTs = performance.now();
+      this._tick(this.lastTs);
+    }
+  }
+
+  isSleeping() {
+    return this.sleeping;
+  }
+
+  syncState(state, analysis, simInfo = {}, extra = {}) {
+    const prev = this._prevSync;
+    const curBench = state.bench || 1;
+    const curMuffleActive = (state.muffleLvl || 0) > 0;
+    const curActiveSlot = typeof extra.activeSlot === 'number' ? extra.activeSlot : prev.activeSlot;
+    const prevPrCount = prev.prCount || 0;
+
+    this.lastState = state;
+    this.lastAnalysis = analysis;
+    this.lastSimInfo = simInfo;
+    if (typeof extra.uvLampOn === 'boolean') {
+      this.uvLampOn = extra.uvLampOn;
+    }
+
+    if (!this.webglSupported) return;
+
+    const goalPos = this._getVesselWorkstationPos(state);
+    const psuPos = this._getPsuPosForBench(curBench, !!state.electrolysisOn);
+    if (this.psuUnitGroup) {
+      this.psuUnitGroup.position.copy(psuPos);
+    }
+
+    // Запускаем плавную 3D-дугу переноса сосуда ТОЛЬКО когда реальный стол / камера муфеля изменились (без бага мутации lastState!)
+    if (
+      prev.vessel !== '' &&
+      prev.activeSlot === curActiveSlot &&
+      (prev.bench !== curBench || (curBench === 3 && prev.muffleActive !== curMuffleActive))
+    ) {
+      this.transferAnim = {
+        active: true,
+        t: 0,
+        dur: prev.bench !== curBench ? 0.82 : 0.62,
+        from: this.curVesselPos.clone(),
+        to: goalPos.clone()
+      };
+      this.triggerSplash(0.42);
+      this.wake(2400);
+    } else if (prev.activeSlot !== curActiveSlot) {
+      this.transferAnim.active = false;
+      this.curVesselPos.copy(goalPos);
+    }
+
+    const elecKey = `${curBench}:${state.vessel}:${curMuffleActive ? 1 : 0}:${state.electrolysisOn ? 1 : 0}:${curActiveSlot}`;
+    if (prev.vessel !== state.vessel || prev.elecKey !== elecKey) {
+      this._rebuildDeliveryTube(state.vessel);
+      this._rebuildElectrodeWires(state.vessel, goalPos, psuPos);
+    }
+
+    this._prevSync = {
+      vessel: state.vessel,
+      bench: curBench,
+      muffleActive: curMuffleActive,
+      elecKey,
+      prCount: analysis.precipitates?.length || 0,
+      activeSlot: curActiveSlot
+    };
+
+    if (Array.isArray(extra.slots)) {
+      this._syncAuxVesselRack(extra.slots, curActiveSlot, curBench);
+    }
+
+    // Обновляем цифровое ЖК-табло электронных весов при изменении массы смеси
+    const massStr = `${(analysis.netMassG || 0).toFixed(2).replace('.', ',')} г`;
+    if (massStr !== this.lastMassKey && this.balCtx) {
+      this.lastMassKey = massStr;
+      this._drawLcdCanvas(this.balCtx, '#0f172a', '#38bdf8', 'МАССА НЕТТО', massStr, state.vessel.toUpperCase());
+      this.balTex.needsUpdate = true;
+    }
+
+    // Обновляем цифровое табло блока питания электролизёра
+    const ampStr = `${(analysis.currentAmp || 0).toFixed(2).replace('.', ',')} А`;
+    const psuSub = !analysis.wet ? 'ЦЕПЬ РАЗОМКНУТА' : (analysis.isElectrolyte ? 'ЭЛЕКТРОЛИТ' : 'НЕЭЛЕКТРОЛИТ');
+    const psuKey = `${ampStr}|${psuSub}`;
+    if (psuKey !== this.lastPsuKey && this.psuCtx) {
+      this.lastPsuKey = psuKey;
+      const fg = analysis.currentAmp > 0 ? '#34d399' : '#f59e0b';
+      this._drawLcdCanvas(this.psuCtx, '#062e22', fg, 'DC 12,0 В', ampStr, psuSub);
+      this.psuTex.needsUpdate = true;
+    }
+
+    // Обновляем ЖК-табло магнитной мешалки с подогревом (Стол 2)
+    const hpSetStr = ['ВЫКЛ', '60 °C', '125 °C', '260 °C'][state.hotplateLvl || 0];
+    const hpMain = (state.hotplateLvl || 0) > 0 ? hpSetStr : (state.stirrerOn ? '600 rpm' : 'ВЫКЛ');
+    const hpSub = `${state.stirrerOn ? '600' : '0'} об/мин · t=${Math.round(state.temp)}°C`;
+    const hpKey = `${hpMain}|${hpSub}`;
+    if (hpKey !== this.lastHotplateKey && this.hotplateCtx) {
+      this.lastHotplateKey = hpKey;
+      const fg = (state.hotplateLvl || 0) > 0 ? '#fb923c' : (state.stirrerOn ? '#38bdf8' : '#94a3b8');
+      this._drawLcdCanvas(this.hotplateCtx, '#0f172a', fg, 'ТЕРМОМЕШАЛКА', hpMain, hpSub);
+      this.hotplateTex.needsUpdate = true;
+    }
+
+    // Обновляем ЖК-табло ПИД-контроллера муфельной печи ПМ-1000 (Стол 3)
+    const mfSetStr = ['ВЫКЛ', '600 °C', '950 °C'][state.muffleLvl || 0];
+    const mfSub = `ФАКТ: ${Math.round(state.temp)} °C`;
+    const mfKey = `${mfSetStr}|${mfSub}`;
+    if (mfKey !== this.lastMuffleKey && this.muffleCtx) {
+      this.lastMuffleKey = mfKey;
+      const fg = (state.muffleLvl || 0) > 0 ? '#fde047' : '#fb923c';
+      this._drawLcdCanvas(this.muffleCtx, '#1c0a05', fg, 'МУФЕЛЬ ПМ-1000', mfSetStr, mfSub);
+      this.muffleTex.needsUpdate = true;
+    }
+
+    // Цвет осадка на покоящемся бумажном фильтре
+    if (this.restFilterPaperMat) {
+      if (Array.isArray(state.filteredSolids) && state.filteredSolids.length > 0) {
+        this.restFilterPaperMat.color.set(state.filteredSolids[0].color || '#f8fafc');
+      } else {
+        this.restFilterPaperMat.color.set('#ffffff');
+      }
+    }
+
+    // Если выпал новый осадок — рождаем свежую порцию оседающих хлопьев
+    if (analysis.precipitates.length > prevPrCount && analysis.wet) {
+      const pr = analysis.precipitates[0];
+      const maxH = this._liquidMaxHeight(state.vessel);
+      const cap = VESSELS[state.vessel].cap;
+      const liqH = Math.min(maxH, (analysis.volume / cap) * maxH);
+      for (let i = 0; i < 65; i++) {
+        const rMax = this._innerRadiusAt(state.vessel, liqH * 0.5) * 0.85;
+        const ang = Math.random() * Math.PI * 2;
+        const rr = Math.sqrt(Math.random()) * rMax;
+        this.flakes.push({
+          x: Math.cos(ang) * rr,
+          y: 0.08 + Math.random() * Math.max(0.08, liqH - 0.1),
+          z: Math.sin(ang) * rr,
+          vy: -0.06 - Math.random() * 0.09,
+          size: 0.012 + Math.random() * 0.014,
+          rot: Math.random() * 6.28,
+          color: pr.color
+        });
+      }
+      if (this.flakes.length > 120) this.flakes.splice(0, this.flakes.length - 120);
+    } else if (analysis.precipitates.length === 0) {
+      this.flakes.length = 0;
+    }
+
+    this._syncSolidMeshes(state, analysis);
+
+    if (
+      state.heatLvl > 0 ||
+      (state.hotplateLvl || 0) > 0 ||
+      (state.muffleLvl || 0) > 0 ||
+      state.iceBathOn ||
+      state.stirrerOn ||
+      state.electrolysisOn ||
+      simInfo.gasRate > 0.01 ||
+      simInfo.boiling ||
+      simInfo.volcanoErupting ||
+      simInfo.goldenRainSparkle ||
+      Math.abs(state.temp - 22) > 0.25
+    ) {
+      this.wake(1800);
+    } else {
+      this.wake(450);
+    }
+  }
+
+  _syncSolidMeshes(state, analysis) {
+    const sig = Object.entries(state.amt || {})
+      .filter(([id, q]) => q > 0 && REAGENTS[id]?.state === 's')
+      .map(([id, q]) => {
+        const p = Math.round((state.prog[id] || 0) * 25);
+        const cu = Math.round((state.coatings.copperPlated || 0) * 10);
+        const ag = Math.round((state.coatings.silverPlated || 0) * 10);
+        const ch = Math.round((state.coatings.carbonFoam || 0) * 10);
+        const vo = Math.round((state.coatings.volcanoAsh || 0) * 10);
+        const km = Math.round((state.prog.dry_kmno4 || 0) * 10);
+        const ce = Math.round((state.prog.cuo_eth || 0) * 10);
+        const wh = Math.round((state.coatings.anhydrousWhite || 0) * 10);
+        const ca = Math.round((state.prog.calcine_caco3 || 0) * 10);
+        return `${id}:${q}:${p}:${cu}:${ag}:${ch}:${vo}:${km}:${ce}:${wh}:${ca}`;
+      })
+      .join('|');
+
+    if (sig === this.solidsSig) return;
+    this.solidsSig = sig;
+
+    while (this.solidsGroup.children.length) {
+      const m = this.solidsGroup.children.pop();
+      if (m.geometry) m.geometry.dispose();
+      if (m.material) m.material.dispose();
+    }
+
+    let slotIdx = 0;
+    for (const [id, q] of Object.entries(state.amt || {})) {
+      if (q <= 0) continue;
+      const r = REAGENTS[id];
+      if (!r || r.state !== 's') continue;
+      const p = Math.min(1, state.prog[id] || 0);
+      if (p >= 0.99 && !r.catalyst && !r.adsorbent) continue;
+
+      const scaleLeft = r.catalyst || r.adsorbent ? 1 : Math.max(0.18, 1 - p * 0.85);
+      let col = r.color || '#cbd5e1';
+      let isMetallic = (r.category || r.cat) === 'met' && state.coatings.carbonFoam < 0.2;
+
+      if (state.coatings.silverPlated > 0.2 && ['cu', 'fe', 'zn', 'mg', 'al'].includes(id)) {
+        col = '#f8fafc';
+        isMetallic = true;
+      } else if (state.coatings.copperPlated > 0.2 && ['fe', 'zn', 'mg', 'al'].includes(id)) {
+        col = '#c8753c';
+        isMetallic = true;
+      }
+      if (id === 'cuo' && (state.prog.cuo_eth || 0) > 0.45) {
+        col = '#c8753c';
+        isMetallic = true;
+      }
+      if (id === 'cuso4s' && state.coatings.anhydrousWhite > 0.4) {
+        col = '#f1f5f9';
+      }
+      if (id === 'malach' && (state.prog.dry_malach || 0) > 0.5) {
+        col = '#1c1917';
+      }
+      if (id === 'kmno4s' && (state.prog.dry_kmno4 || 0) > 0.45) {
+        col = '#1f2937';
+      }
+      if (id === 'sucrose' && state.coatings.carbonFoam > 0.25) {
+        col = '#18181b';
+      }
+      if (id === 'nh4cr2o7' && state.coatings.volcanoAsh > 0.15) {
+        col = state.coatings.volcanoAsh > 0.45 ? '#166534' : '#65a30d';
+      }
+      if (id === 'caco3' && (state.prog.calcine_caco3 || 0) > 0.45) {
+        col = '#fef9c3';
+      }
+
+      const mat = new THREE.MeshStandardMaterial({
+        color: col,
+        metalness: isMetallic ? 0.82 : 0.08,
+        roughness: isMetallic ? 0.26 : 0.85
+      });
+
+      const piecesCount = r.shape === 'powder' ? 9 : (r.shape === 'wire' ? 2 : 4);
+      for (let i = 0; i < piecesCount; i++) {
+        let geo;
+        if (r.shape === 'wire') {
+          geo = new THREE.TorusGeometry(0.065, 0.014, 8, 20, Math.PI * 1.5);
+        } else if (r.shape === 'pellet' || r.float) {
+          geo = new THREE.SphereGeometry(0.042, 14, 14);
+        } else {
+          geo = new THREE.DodecahedronGeometry(r.shape === 'powder' ? 0.026 : 0.046, 0);
+        }
+
+        const mesh = new THREE.Mesh(geo, mat);
+        const ang = (slotIdx * 1.7 + i * 2.1);
+        const rad = (state.vessel === 'tube' ? 0.06 : 0.18) * ((i + 1) / piecesCount);
+        mesh.position.set(Math.cos(ang) * rad, 0.04 + (i % 2) * 0.02, Math.sin(ang) * rad);
+
+        if (id === 'sucrose' && state.coatings.carbonFoam > 0.2) {
+          const grow = 1 + state.coatings.carbonFoam * 3.2;
+          mesh.scale.set(grow * 1.4, grow * 2.6, grow * 1.4);
+          mesh.position.y = 0.08 + state.coatings.carbonFoam * 0.18;
+        } else if (id === 'nh4cr2o7' && state.coatings.volcanoAsh > 0.15) {
+          const grow = 1 + state.coatings.volcanoAsh * 2.9;
+          mesh.scale.set(grow * 1.5, grow * 2.3, grow * 1.5);
+          mesh.position.y = 0.06 + state.coatings.volcanoAsh * 0.14 * (1 - i / (piecesCount + 1));
+        } else {
+          mesh.scale.setScalar(scaleLeft);
+        }
+
+        mesh.userData = { float: !!r.float, waterFlame: r.waterFlame || '', baseAng: ang, rad };
+        this.solidsGroup.add(mesh);
+      }
+      slotIdx++;
+    }
+  }
+
+  resize() {
+    if (!this.webglSupported || !this.renderer) return;
+    const rect = this.container.getBoundingClientRect();
+    const w = Math.max(200, rect.width);
+    const h = Math.max(200, rect.height);
+    this.renderer.setSize(w, h, false);
+    const aspect = w / h;
+    this.camera.aspect = aspect;
+    // При узких пропорциях центральной панели расширяем вертикальный угол обзора,
+    // чтобы боковые приборы на столе (промывалка и электронные весы) всегда помещались в кадр
+    this.camera.fov = aspect < 1.38 ? Math.min(48, 34 * Math.pow(1.38 / Math.max(0.72, aspect), 0.58)) : 34;
+    this.camera.updateProjectionMatrix();
+    this.wake(400);
+  }
+
+  captureSnapshotDataURL() {
+    if (!this.webglSupported || !this.renderer) return '';
+    this.renderer.render(this.scene, this.camera);
+    try {
+      return this.canvas.toDataURL('image/jpeg', 0.86);
+    } catch (e) {
+      return '';
+    }
+  }
+
+  _tick(ts) {
+    if (!this.webglSupported) return;
+    const dt = Math.min(0.05, Math.max(0.001, (ts - this.lastTs) / 1000));
+    this.lastTs = ts;
+
+    const stillActive = this._stepFrame(dt, ts);
+    this.renderer.render(this.scene, this.camera);
+
+    if (stillActive || ts < this.awakeUntil) {
+      this.sleeping = false;
+      this.raf = requestAnimationFrame((t) => this._tick(t));
+    } else {
+      this.sleeping = true;
+      if (this.callbacks.onSleepChange) this.callbacks.onSleepChange(true);
+    }
+  }
+
+  _stepFrame(dt, ts) {
+    const s = this.lastState;
+    const a = this.lastAnalysis;
+    const sim = this.lastSimInfo || {};
+    let busy = false;
+
+    const curBench = s?.bench || 1;
+    const goalVesselPos = this._getVesselWorkstationPos(s);
+
+    // 0. Анимация дугового переноса сосуда между столами (или в камеру муфельной печи и обратно)
+    if (this.transferAnim.active) {
+      busy = true;
+      this.transferAnim.t += dt;
+      const rawP = Math.min(1, this.transferAnim.t / this.transferAnim.dur);
+      const easeP = rawP < 0.5 ? 4 * rawP * rawP * rawP : 1 - Math.pow(-2 * rawP + 2, 3) / 2;
+      this.curVesselPos.lerpVectors(this.transferAnim.from, this.transferAnim.to, easeP);
+      this.curVesselPos.y += Math.sin(rawP * Math.PI) * 0.48;
+      if (rawP >= 1) {
+        this.transferAnim.active = false;
+        this.curVesselPos.copy(goalVesselPos);
+      }
+    } else {
+      this.curVesselPos.copy(goalVesselPos);
+    }
+
+    const curX = this.curVesselPos.x;
+    const vesselY = this.curVesselPos.y;
+    const curZ = this.curVesselPos.z;
+
+    // 1. Плавное движение камеры к выбранному столу / ракурсу + орбита мышью
+    let P = CAMERA_PRESETS[this.presetId] || CAMERA_PRESETS.all;
+    let targetGoal;
+    let rawPosGoal;
+    if (this.presetId === 'hall' || this.presetId === 'gas') {
+      targetGoal = new THREE.Vector3(...P.target);
+      rawPosGoal = new THREE.Vector3(...P.pos);
+    } else if (this.presetId === 'vessel') {
+      targetGoal = new THREE.Vector3(curX, vesselY + 0.44, curZ);
+      rawPosGoal = new THREE.Vector3(curX, vesselY + 0.96, curZ + 3.95);
+    } else if (this.presetId === 'lamp') {
+      if (curBench === 2) {
+        targetGoal = new THREE.Vector3(4.90, 0.25, 0.15);
+        rawPosGoal = new THREE.Vector3(4.90, 0.95, 3.15);
+      } else if (curBench === 3) {
+        targetGoal = new THREE.Vector3(-4.80, 0.72, -0.25);
+        rawPosGoal = new THREE.Vector3(-4.65, 1.15, 3.35);
+      } else {
+        targetGoal = new THREE.Vector3(...P.target);
+        rawPosGoal = new THREE.Vector3(...P.pos);
+      }
+    } else {
+      // 'all' — обзор активного лабораторного стола
+      if (curBench === 2) {
+        targetGoal = new THREE.Vector3(4.95, 0.72, 0.05);
+        rawPosGoal = new THREE.Vector3(4.95, 2.38, 5.55);
+      } else if (curBench === 3) {
+        targetGoal = new THREE.Vector3(-5.20, 0.80, -0.15);
+        rawPosGoal = new THREE.Vector3(-5.15, 2.28, 5.95);
+      } else {
+        targetGoal = new THREE.Vector3(...P.target);
+        rawPosGoal = new THREE.Vector3(...P.pos);
+      }
+    }
+
+    const baseOffset = rawPosGoal.clone().sub(targetGoal).multiplyScalar(this.camSpherical.zoom);
+    const cosY = Math.cos(this.camSpherical.yaw);
+    const sinY = Math.sin(this.camSpherical.yaw);
+    const rx = baseOffset.x * cosY - baseOffset.z * sinY;
+    const rz = baseOffset.x * sinY + baseOffset.z * cosY;
+    const ry = baseOffset.y + this.camSpherical.pitch * 2.2;
+    const posGoal = new THREE.Vector3(targetGoal.x + rx, Math.max(0.35, targetGoal.y + ry), targetGoal.z + rz);
+
+    if (this.camPosCur.distanceTo(posGoal) > 0.002 || this.camTargetCur.distanceTo(targetGoal) > 0.002) {
+      busy = true;
+    }
+    this.camPosCur.lerp(posGoal, Math.min(1, dt * 7.5));
+    this.camTargetCur.lerp(targetGoal, Math.min(1, dt * 7.5));
+
+    const aspect = this.camera.aspect || 1.4;
+    const desiredFov = aspect < 1.38
+      ? Math.min(49, P.fov * Math.pow(1.38 / Math.max(0.72, aspect), 0.56))
+      : P.fov;
+    if (Math.abs(this.camera.fov - desiredFov) > 0.05) {
+      this.camera.fov += (desiredFov - this.camera.fov) * Math.min(1, dt * 8);
+      this.camera.updateProjectionMatrix();
+      busy = true;
+    }
+    this.camera.position.copy(this.camPosCur);
+    this.camera.lookAt(this.camTargetCur);
+
+    if (!s || !a) return busy;
+
+    // 2. Посуда, штатив/треножник, термомешалка (Стол 2), муфельная печь (Стол 3), ледяная баня, бюретка и электролизёр
+    const kind = s.vessel;
+    this.vesselRoot.position.set(curX, vesselY, curZ);
+    for (const k of ['flask', 'round', 'tube', 'beaker', 'evap', 'crucible']) {
+      if (this.vesselMeshes[k]) this.vesselMeshes[k].visible = k === kind;
+    }
+    this.tripodGroup.visible = curBench !== 1 || kind !== 'tube';
+    this.retortGroup.visible = curBench === 1 && (kind === 'tube' || kind === 'round');
+    if (this.hotplateClamp) {
+      this.hotplateClamp.visible = curBench === 2 && (kind === 'tube' || kind === 'round');
+    }
+    this.gasRigGroup.visible = curBench === 1 && !!s.tubeOn && VESSELS[kind].allowTube;
+
+    const cap = VESSELS[kind].cap;
+    const maxH = this._liquidMaxHeight(kind);
+    const liqFrac = Math.min(1.04, a.volume / cap);
+    const liqLocalY = a.wet ? Math.max(0.045, liqFrac * maxH) : -0.2;
+    const liqWorldY = vesselY + liqLocalY;
+    const mouthLocalY = this._mouthHeight(kind);
+    const mouthWorldY = vesselY + mouthLocalY;
+
+    // 2а. Ледяная баня вокруг сосуда
+    this.iceBathGroup.visible = !!s.iceBathOn && (s.muffleLvl || 0) === 0;
+    if (this.iceBathGroup.visible) {
+      busy = true;
+      this.iceBathGroup.position.set(curX, vesselY - 0.04, curZ);
+      const tIce = ts / 1000;
+      for (const ic of this.iceCubes) {
+        ic.mesh.position.y = ic.baseY + Math.sin(tIce * 2.1 + ic.ph) * 0.012;
+        ic.mesh.rotation.y += dt * 0.18;
+      }
+    }
+
+    // 2б. Магнитная мешалка с подогревом (вращение якоря + ручки + свечение керамической конфорки)
+    this.stirBarMesh.visible = !!s.stirrerOn && (s.muffleLvl || 0) === 0;
+    if (this.stirBarMesh.visible) {
+      busy = true;
+      this.stirBarMesh.rotation.y += dt * 22.0;
+      if (a.wet) {
+        this.slosh.angle = 0.065 * Math.sin(ts / 95);
+      }
+    }
+    if (this.hotplateRpmKnob && this.hotplateTempKnob) {
+      this.hotplateRpmKnob.rotation.y = s.stirrerOn ? -1.4 : 0.8;
+      this.hotplateTempKnob.rotation.y = [0.9, -0.1, -0.95, -1.85][s.hotplateLvl || 0] || 0.9;
+      const targetHpGlow = [0, 0.42, 0.95, 1.65][s.hotplateLvl || 0] || 0;
+      if (Math.abs(this.hotplateGlow - targetHpGlow) > 0.01) busy = true;
+      this.hotplateGlow += (targetHpGlow - this.hotplateGlow) * Math.min(1, dt * 3.0);
+      this.hotplateRingMat.emissiveIntensity = this.hotplateGlow * (0.92 + 0.08 * Math.sin(ts / 140));
+    }
+
+    // 2в. Муфельная печь ПМ-1000 на Столе 3 (распахивание дверцы + багрово-оранжевый накал шамотной камеры!)
+    if (this.muffleDoorPivot) {
+      const wantDoorOpen = curBench === 3 && (s.muffleLvl || 0) > 0;
+      const targetDoorAng = wantDoorOpen ? -1.92 : 0.0;
+      if (Math.abs(this.muffleDoorAngle - targetDoorAng) > 0.005) busy = true;
+      this.muffleDoorAngle += (targetDoorAng - this.muffleDoorAngle) * Math.min(1, dt * 6.5);
+      this.muffleDoorPivot.rotation.y = this.muffleDoorAngle;
+
+      const targetMfGlow = (s.muffleLvl || 0) === 2 ? 1.55 : ((s.muffleLvl || 0) === 1 ? 0.85 : Math.max(0, (s.temp - 280) / 500));
+      if (Math.abs(this.muffleGlow - targetMfGlow) > 0.01) busy = true;
+      this.muffleGlow += (targetMfGlow - this.muffleGlow) * Math.min(1, dt * 2.2);
+      const pulse = 0.94 + 0.06 * Math.sin(ts / 180);
+      this.muffleChamberMat.emissiveIntensity = this.muffleGlow * pulse;
+      this.muffleCoilMat.emissiveIntensity = this.muffleGlow * 1.45 * pulse;
+      this.muffleLight.intensity = this.muffleGlow * 2.6 * pulse;
+      if (this.muffleGlow > 0.08) {
+        this.muffleWindowMat.color.set('#1e293b').lerp(new THREE.Color('#ff7b00'), Math.min(1, this.muffleGlow));
+      } else {
+        this.muffleWindowMat.color.set('#1e293b');
+      }
+    }
+
+    // Тепловое свечение раскалённых сухих веществ в тигле/чашке при T > 520 °C + фотолюминесценция/послесвечение люминофоров!
+    const lum = a.luminescence || null;
+    const targetUvMix = this.uvLampOn ? 1 : 0;
+    if (Math.abs(this.uvMix - targetUvMix) > 0.005) busy = true;
+    this.uvMix += (targetUvMix - this.uvMix) * Math.min(1, dt * 5.2);
+
+    const uvGlowPow = (this.uvMix > 0.02 && lum?.uvIntensity > 0.01) ? lum.uvIntensity * this.uvMix : 0;
+    const selfGlowPow = lum?.selfIntensity > 0.01 ? lum.selfIntensity : 0;
+    let activeLumColor = '';
+    let activeLumPow = 0;
+    if (uvGlowPow >= selfGlowPow && uvGlowPow > 0.01) {
+      activeLumColor = lum.uvColor;
+      activeLumPow = uvGlowPow;
+    } else if (selfGlowPow > 0.01) {
+      activeLumColor = lum.selfColor;
+      activeLumPow = selfGlowPow;
+      busy = true; // Хемилюминесценция и послесвечение плавно затухают во времени
+    }
+
+    // Притемнение зала (включая IBL environmentIntensity!) в режиме УФ 365 нм и при яркой хемилюминесценции
+    const darkMix = Math.max(this.uvMix, selfGlowPow * 0.62);
+    if (this.hemiLight && this.dirLight) {
+      this.hemiLight.intensity = 0.95 * (1 - 0.72 * darkMix);
+      this.dirLight.intensity = 1.45 * (1 - 0.78 * darkMix);
+      if ('environmentIntensity' in this.scene) {
+        this.scene.environmentIntensity = 1.0 - 0.80 * darkMix;
+      }
+      if (this.baseBgColor && this.scene.background) {
+        this.scene.background.copy(this.baseBgColor).lerp(new THREE.Color('#090d1c'), 0.82 * darkMix);
+      }
+    }
+
+    if (this.uvLampGroup) {
+      this.uvLampGroup.visible = this.uvMix > 0.02;
+      if (this.uvLampGroup.visible) {
+        this.uvLampGroup.position.set(curX, mouthWorldY + 1.02, curZ + 0.06);
+        this.uvTubeMat.emissiveIntensity = 2.6 * this.uvMix;
+        this.uvBeamMat.opacity = 0.11 * this.uvMix;
+        this.uvLight.position.set(curX, mouthWorldY + 0.95, curZ + 0.22);
+        this.uvLight.intensity = 4.6 * this.uvMix;
+      } else {
+        this.uvLight.intensity = 0;
+      }
+    }
+
+    const solidIncandescence = !a.wet && s.temp > 520 ? Math.min(1.2, (s.temp - 520) / 380) : 0;
+    for (const child of this.solidsGroup.children) {
+      if (child.material && child.material.emissive) {
+        if (activeLumPow > 0.02 && !a.wet) {
+          child.material.emissive.set(activeLumColor);
+          child.material.emissiveIntensity = activeLumPow * 2.1;
+        } else {
+          child.material.emissive.set('#ff5500');
+          child.material.emissiveIntensity = solidIncandescence;
+        }
+      }
+    }
+
+    // 2г. Титровальная бюретка 25 мл над сосудом
+    this.buretteGroup.visible = !!s.buretteOn && (s.muffleLvl || 0) === 0;
+    if (this.buretteGroup.visible) {
+      this.buretteStand.position.set(curX, 0, curZ);
+      this.buretteColumn.position.set(curX, mouthWorldY + 0.18, curZ);
+      const remFrac = Math.max(0.06, 1 - ((s.buretteUsedMl || 0) % 25) / 25);
+      const bH = 0.96 * remFrac;
+      this.buretteLiqMesh.scale.set(1, remFrac, 1);
+      this.buretteLiqMesh.position.y = 0.12 + bH / 2;
+    }
+
+    // 2д. Электролизная установка: опускается ТОЛЬКО в активный сосуд на текущем столе и ТОЛЬКО когда в сосуде есть среда!
+    const hasVesselContents = a.wet || Object.keys(s.amt || {}).some((k) => (s.amt[k] || 0) > 0.01);
+    const elActive = !!s.electrolysisOn && !this.transferAnim.active && hasVesselContents && (s.muffleLvl || 0) === 0;
+    this.electrodeRig.visible = elActive;
+    if (this.wireCathodeMesh) this.wireCathodeMesh.visible = elActive;
+    if (this.wireAnodeMesh) this.wireAnodeMesh.visible = elActive;
+    if (elActive) {
+      this.electrodeRig.position.set(curX, mouthWorldY + 0.05, curZ);
+      if ((s.coatings.copperPlated || 0) > 0.12) {
+        this.cathodeMat.color.set('#c8753c');
+        this.cathodeMat.metalness = 0.85;
+      } else if ((s.coatings.silverPlated || 0) > 0.12) {
+        this.cathodeMat.color.set('#f8fafc');
+        this.cathodeMat.metalness = 0.92;
+      } else {
+        this.cathodeMat.color.set('#27272a');
+        this.cathodeMat.metalness = 0.35;
+      }
+
+      // Генерация струек мелких пузырьков непосредственно на катоде и аноде
+      if (a.wet && a.currentAmp > 0 && this.bubbles.length < 210) {
+        busy = true;
+        if (sim.cathodeGas && Math.random() < 0.72) {
+          this.bubbles.push({
+            x: -0.075 + (Math.random() - 0.5) * 0.025,
+            y: Math.max(0.05, liqLocalY * (0.25 + Math.random() * 0.55)),
+            z: (Math.random() - 0.5) * 0.025,
+            r: 0.006 + Math.random() * 0.008,
+            vy: 0.36 + Math.random() * 0.25,
+            ph: Math.random() * 6.28
+          });
+        }
+        if (sim.anodeGas && Math.random() < 0.65) {
+          this.bubbles.push({
+            x: 0.075 + (Math.random() - 0.5) * 0.025,
+            y: Math.max(0.05, liqLocalY * (0.25 + Math.random() * 0.55)),
+            z: (Math.random() - 0.5) * 0.025,
+            r: 0.006 + Math.random() * 0.008,
+            vy: 0.34 + Math.random() * 0.24,
+            ph: Math.random() * 6.28
+          });
+        }
+      }
+    }
+
+    // Колебания мениска жидкости (маятник с затуханием)
+    this.slosh.vel += (-28 * this.slosh.angle - 3.6 * this.slosh.vel) * dt;
+    this.slosh.angle += this.slosh.vel * dt;
+    if (Math.abs(this.slosh.angle) > 0.002 || Math.abs(this.slosh.vel) > 0.005) busy = true;
+
+    const sloshNormal = new THREE.Vector3(Math.sin(this.slosh.angle * 0.25), -1, 0).normalize();
+    this.liqClipPlane.setFromNormalAndCoplanarPoint(sloshNormal, new THREE.Vector3(curX, liqWorldY, curZ));
+    this.gasClipPlane.setFromNormalAndCoplanarPoint(
+      new THREE.Vector3(0, 1, 0),
+      new THREE.Vector3(curX, a.wet ? liqWorldY : vesselY + 0.02, curZ)
+    );
+
+    const targetLiqCol = new THREE.Color(a.liquidColor || '#dff2fc');
+    if (activeLumPow > 0.02) {
+      targetLiqCol.lerp(new THREE.Color(activeLumColor), Math.min(0.92, activeLumPow * 0.88));
+    }
+    this.liqMat.color.lerp(targetLiqCol, Math.min(1, dt * 8));
+    this.liqMat.opacity = a.wet ? Math.max(a.liquidOpacity, activeLumPow * 0.84) : 0;
+    this.meniscusMat.color.copy(this.liqMat.color);
+    this.meniscusMat.opacity = a.wet ? Math.min(0.92, Math.max(a.liquidOpacity, activeLumPow * 0.84) + 0.14) : 0;
+
+    // Фотолюминесценция квантовых точек / флуоресцеина / кристаллофосфоров и хемилюминесценция люминола!
+    // Умеренная emissiveIntensity сохраняет насыщенный неоновый тон при ACESFilmicToneMapping без выбеливания!
+    if (activeLumPow > 0.02) {
+      const lumPulse = 0.95 + 0.05 * Math.sin(ts / 160);
+      this.liqMat.emissive.set(activeLumColor);
+      this.liqMat.emissiveIntensity = a.wet ? activeLumPow * 1.15 * lumPulse : 0;
+      this.meniscusMat.emissive.set(activeLumColor);
+      this.meniscusMat.emissiveIntensity = a.wet ? activeLumPow * 1.35 * lumPulse : 0;
+      this.sedimentMat.emissive.set(activeLumColor);
+      this.sedimentMat.emissiveIntensity = activeLumPow * 1.25 * lumPulse;
+
+      this.lumHaloSprite.visible = true;
+      const glowH = a.wet ? Math.max(0.18, liqLocalY * 0.55) : 0.14;
+      this.lumHaloSprite.position.set(0, glowH, 0);
+      const hScale = (a.wet ? 1.25 : 0.90) * (0.85 + 0.25 * activeLumPow);
+      this.lumHaloSprite.scale.set(hScale, hScale, 1);
+      this.lumHaloMat.color.set(activeLumColor);
+      this.lumHaloMat.opacity = Math.min(0.68, activeLumPow * 0.56 * lumPulse);
+
+      this.lumLight.color.set(activeLumColor);
+      this.lumLight.position.set(curX, vesselY + glowH + 0.12, curZ + 0.28);
+      this.lumLight.intensity = activeLumPow * 3.2 * lumPulse;
+    } else {
+      this.liqMat.emissive.set('#000000');
+      this.liqMat.emissiveIntensity = 0;
+      this.meniscusMat.emissive.set('#000000');
+      this.meniscusMat.emissiveIntensity = 0;
+      this.sedimentMat.emissive.set('#000000');
+      this.sedimentMat.emissiveIntensity = 0;
+      this.lumHaloSprite.visible = false;
+      this.lumLight.intensity = 0;
+    }
+
+    if (a.wet) {
+      const rMen = this._innerRadiusAt(kind, liqLocalY) * 0.965;
+      this.meniscusMesh.visible = true;
+      this.meniscusMesh.position.set(0, liqLocalY, 0);
+      this.meniscusMesh.scale.set(rMen, rMen, 1);
+      this.meniscusMesh.rotation.set(-Math.PI / 2, 0, this.slosh.angle * 0.25);
+    } else {
+      this.meniscusMesh.visible = false;
+    }
+
+    // Плавающие щелочные металлы бегают по поверхности воды (+ фиолетовое пламя калия)
+    const tSec = ts / 1000;
+    let alkaliFlamePos = null;
+    let alkaliFlameColor = '';
+    for (const child of this.solidsGroup.children) {
+      if (child.userData.float && a.wet) {
+        busy = true;
+        const rMax = this._innerRadiusAt(kind, liqLocalY) * 0.65;
+        const a1 = child.userData.baseAng + tSec * 3.4;
+        child.position.set(
+          Math.cos(a1) * rMax * Math.sin(tSec * 2.1),
+          liqLocalY + 0.01,
+          Math.sin(a1 * 1.3) * rMax * 0.7
+        );
+        if (child.userData.waterFlame && !alkaliFlamePos) {
+          alkaliFlamePos = child.position;
+          alkaliFlameColor = child.userData.waterFlame;
+        }
+      }
+    }
+    if (alkaliFlamePos && a.wet) {
+      this.alkaliFlameMesh.visible = true;
+      this.alkaliFlameMesh.position.set(alkaliFlamePos.x, alkaliFlamePos.y + 0.01, alkaliFlamePos.z);
+      const uA = this.alkaliFlameMat.uniforms;
+      uA.uTime.value = tSec * 1.25;
+      uA.uFlicker.value = 0.9 + 0.25 * Math.sin(tSec * 31);
+      uA.uTint.value.set(alkaliFlameColor);
+      uA.uTintMix.value = 0.88;
+      if (Math.random() < 0.22) {
+        this._spawnSparks(curX + alkaliFlamePos.x, vesselY + alkaliFlamePos.y + 0.05, curZ + alkaliFlamePos.z, 1, alkaliFlameColor, 0.55);
+      }
+    } else if (this.alkaliFlameMesh) {
+      this.alkaliFlameMesh.visible = false;
+    }
+
+    // Донный слой осадка, серебряное зеркало, кольцо возгонки и газ над раствором
+    if (a.precipitates.length > 0) {
+      const pr = a.precipitates[0];
+      this.sedimentMat.color.lerp(new THREE.Color(pr.color), Math.min(1, dt * 6));
+      this.sedimentMat.opacity = Math.min(0.92, this.sedimentMat.opacity + dt * 1.4);
+      const sedTop = vesselY + (a.wet ? Math.min(liqLocalY * 0.35, 0.14) : 0.08);
+      this.sedClipPlane.constant = sedTop;
+    } else {
+      this.sedimentMat.opacity = Math.max(0, this.sedimentMat.opacity - dt * 2.5);
+    }
+
+    this.mirrorMat.opacity = (s.coatings.silverMirror || 0) * 0.92;
+    this.mirrorClipPlane.constant = vesselY + Math.max(0.35, liqLocalY + 0.05);
+    this.sublMat.opacity = (s.coatings.sublimedRing || 0) * 0.88;
+
+    if (s.headspace?.gas && s.headspace.amount > 0.02) {
+      const gCol = s.headspace.gas === 'Cl2' ? '#bef264' : '#b45309';
+      this.headGasMat.color.set(gCol);
+      this.headGasMat.opacity = Math.min(0.55, s.headspace.amount * 0.52);
+    } else {
+      this.headGasMat.opacity = Math.max(0, this.headGasMat.opacity - dt * 1.5);
+    }
+
+    // 3. Естественное пламя спиртовки, накал сетки, тление фитиля и окрашивание катионами
+    if (this.prevHeatLvl > 0 && s.heatLvl === 0) {
+      // При задувании/гашении спиртовки от тлеющего фитиля поднимается лёгкий струящийся дымок
+      this._spawnSmokePuff(this.vesselX, 0.74, 0, '#e2e8f0', 0.11, 0.28);
+      this._spawnSmokePuff(this.vesselX + 0.02, 0.77, 0.01, '#cbd5e1', 0.13, 0.32);
+    }
+    this.prevHeatLvl = s.heatLvl;
+
+    const targetEmber = s.heatLvl > 0 ? 1.0 : 0.0;
+    this.emberHeat += (targetEmber - this.emberHeat) * Math.min(1, dt * (s.heatLvl > 0 ? 4.5 : 0.65));
+    if (this.emberHeat > 0.015) busy = true;
+    this.wickEmberMat.emissiveIntensity = this.emberHeat * (1.35 + 0.25 * Math.sin(tSec * 15));
+
+    const targetGauze = kind !== 'tube' && s.heatLvl > 0 ? [0, 0.36, 0.68, 0.96][s.heatLvl] : 0;
+    this.gauzeHeat += (targetGauze - this.gauzeHeat) * Math.min(1, dt * (targetGauze > this.gauzeHeat ? 0.85 : 0.55));
+    if (this.gauzeHeat > 0.01) busy = true;
+    this.gauzeGlowMat.opacity = this.gauzeHeat * (0.72 + 0.08 * Math.sin(tSec * 19));
+
+    if (s.heatLvl > 0) {
+      busy = true;
+      this.flameGroup.visible = true;
+      this.snufferCap.position.set(0.54, 0.12, 0.16);
+      this.snufferCap.rotation.set(0, 0, 0);
+
+      const scaleH = [0, 0.68, 1.00, 1.34][s.heatLvl] || 1;
+      const scaleR = [0, 0.84, 1.02, 1.18][s.heatLvl] || 1;
+      const flicker = 1 + 0.075 * Math.sin(tSec * 19.3) + 0.045 * Math.sin(tSec * 33.7) + 0.03 * Math.cos(tSec * 47.1);
+      this.flameGroup.scale.set(scaleR, scaleH, scaleR);
+
+      const tinted = ts < this.flameTint.until && !!this.flameTint.color;
+      const u = this.flameShaderMat.uniforms;
+      const capY = vesselY - (kind === 'tube' ? 0.005 : 0.014);
+      u.uTime.value = tSec;
+      u.uPower.value = 0.75 + s.heatLvl * 0.24;
+      u.uFlicker.value = flicker;
+      u.uCapWorldY.value = capY;
+      if (tinted) {
+        u.uTint.value.lerp(new THREE.Color(this.flameTint.color), Math.min(1, dt * 10));
+        u.uTintMix.value = Math.min(0.92, u.uTintMix.value + dt * 5.0);
+      } else {
+        u.uTintMix.value = Math.max(0.0, u.uTintMix.value - dt * 2.5);
+      }
+
+      const uM = this.flameMidMat.uniforms;
+      uM.uTime.value = tSec * 1.28 + 1.9;
+      uM.uPower.value = (0.65 + s.heatLvl * 0.2) * 0.9;
+      uM.uFlicker.value = 1 + 0.09 * Math.cos(tSec * 25.1);
+      uM.uCapWorldY.value = capY;
+      uM.uTint.value.copy(u.uTint.value);
+      uM.uTintMix.value = u.uTintMix.value * 0.85;
+
+      const activeColor = u.uTintMix.value > 0.2 ? u.uTint.value : new THREE.Color('#ff9329');
+      this.flameHaloMat.color.copy(activeColor);
+      this.flameHaloMat.opacity = (0.17 + s.heatLvl * 0.05) * flicker;
+      this.flameHalo.scale.set(0.58 * scaleR, 0.68 * scaleH * flicker, 1);
+
+      // Живое подрагивание источника света от пламени
+      this.flameLight.color.copy(activeColor);
+      this.flameLight.position.set(
+        this.vesselX + 0.02 * Math.sin(tSec * 14),
+        0.92 + 0.08 * scaleH,
+        0.22 + 0.015 * Math.cos(tSec * 11)
+      );
+      this.flameLight.intensity = (1.55 + s.heatLvl * 0.78) * flicker;
+
+      if ((s.heatLvl === 3 || tinted) && Math.random() < (tinted ? 0.16 : 0.05)) {
+        this._spawnSparks(
+          this.vesselX,
+          0.88 + 0.12 * scaleH,
+          0,
+          1,
+          tinted ? this.flameTint.color : '#fde047',
+          0.45
+        );
+      }
+    } else {
+      this.flameGroup.visible = false;
+      this.flameLight.intensity = this.emberHeat * 0.25;
+      // Когда фитиль полностью остыл — колпачок закрывает спиртовку
+      if (this.emberHeat < 0.08) {
+        this.snufferCap.position.set(0, 0.66, 0);
+      }
+    }
+
+    // Затухание вспышек (хлопок H₂, вспышка Mg)
+    if (this.flashEffect.intensity > 0.02) {
+      busy = true;
+      this.flashLight.position.set(curX, vesselY + 0.45, curZ + 0.40);
+      this.flashLight.color.set(this.flashEffect.color);
+      this.flashLight.intensity = this.flashEffect.intensity;
+      this.flashEffect.intensity *= Math.pow(0.03, dt);
+    } else {
+      this.flashLight.intensity = 0;
+    }
+
+    // 4. Пузырьки реакции и кипения в сосуде
+    const gasIntensity = (sim.gasRate || 0) * 0.8 + (sim.boiling ? 16 : 0);
+    if (a.wet && gasIntensity > 0.05) {
+      busy = true;
+      const spawnCount = Math.min(6, Math.floor(gasIntensity * dt * 8 + (Math.random() < (gasIntensity * dt * 8) % 1 ? 1 : 0)));
+      for (let i = 0; i < spawnCount && this.bubbles.length < 210; i++) {
+        const rBot = this._innerRadiusAt(kind, 0.05) * 0.72;
+        const ang = Math.random() * Math.PI * 2;
+        const rr = Math.sqrt(Math.random()) * rBot;
+        this.bubbles.push({
+          x: Math.cos(ang) * rr,
+          y: 0.04 + Math.random() * 0.04,
+          z: Math.sin(ang) * rr,
+          r: 0.008 + Math.random() * 0.016,
+          vy: 0.32 + Math.random() * 0.42,
+          ph: Math.random() * 6.28
+        });
+      }
+    }
+
+    for (let i = this.bubbles.length - 1; i >= 0; i--) {
+      const b = this.bubbles[i];
+      b.y += b.vy * dt;
+      b.x += Math.sin(tSec * 9 + b.ph) * 0.04 * dt;
+      if (!a.wet || b.y >= liqLocalY - 0.01) {
+        this.bubbles.splice(i, 1);
+      }
+    }
+    if (this.bubbles.length > 0) busy = true;
+
+    let bIdx = 0;
+    for (const b of this.bubbles) {
+      this._dummy.position.set(curX + b.x, vesselY + b.y, curZ + b.z);
+      this._dummy.scale.setScalar(b.r);
+      this._dummy.rotation.set(0, 0, 0);
+      this._dummy.updateMatrix();
+      this.bubbleInst.setMatrixAt(bIdx++, this._dummy.matrix);
+    }
+    this.bubbleInst.count = bIdx;
+    this.bubbleInst.instanceMatrix.needsUpdate = true;
+
+    // 5. Движение хлопьев осадка (вкл. искрящийся листопад перекристаллизованного PbI₂ «золотой дождь»)
+    if (sim.goldenRainSparkle && a.wet) {
+      busy = true;
+      for (const f of this.flakes) {
+        if (f.y <= 0.05 && Math.random() < 0.08) {
+          f.y = Math.max(0.08, liqLocalY - 0.04);
+          f.vy = -0.045 - Math.random() * 0.04;
+        }
+      }
+      if (Math.random() < 0.16) {
+        this._spawnSparks(
+          curX + (Math.random() - 0.5) * 0.16,
+          vesselY + 0.08 + Math.random() * Math.max(0.06, liqLocalY - 0.1),
+          curZ + (Math.random() - 0.5) * 0.16,
+          1,
+          '#fde047',
+          0.22
+        );
+      }
+    }
+    for (const f of this.flakes) {
+      if (f.y > 0.045) {
+        busy = true;
+        f.y = Math.max(0.035, f.y + f.vy * dt);
+        f.x += Math.sin(tSec * 2.5 + f.rot) * 0.015 * dt;
+        f.rot += dt * (sim.goldenRainSparkle ? 2.4 : 0.8);
+      }
+    }
+    if (this.flakes.length > 0) {
+      this.flakeMat.color.set(this.flakes[0].color || '#ffffff');
+    }
+    let fIdx = 0;
+    for (const f of this.flakes) {
+      if (!a.wet) break;
+      this._dummy.position.set(curX + f.x, vesselY + Math.min(f.y, liqLocalY - 0.02), curZ + f.z);
+      this._dummy.scale.setScalar(f.size);
+      this._dummy.rotation.set(f.rot, f.rot * 0.7, 0);
+      this._dummy.updateMatrix();
+      this.flakeInst.setMatrixAt(fIdx++, this._dummy.matrix);
+    }
+    this.flakeInst.count = fIdx;
+    this.flakeInst.instanceMatrix.needsUpdate = true;
+
+    // 6. Уровень воды и пузырьки в пробирке-газометре
+    if (this.gasRigGroup.visible) {
+      const totalColl = Math.min(25, Object.values(s.collectedGas || {}).reduce((p, c) => p + c, 0));
+      const waterFrac = Math.max(0.06, 1 - totalColl / 25);
+      const hCol = 1.25 * waterFrac;
+      this.collectorWaterMesh.scale.set(1, hCol, 1);
+      this.collectorWaterMesh.position.set(1.55, 0.28 + hCol / 2, 0);
+
+      if ((sim.gasRate || 0) > 0.1 && totalColl < 25) {
+        busy = true;
+        if (Math.random() < 0.35 && this.troughBubbles.length < 35) {
+          this.troughBubbles.push({
+            x: 1.55 + (Math.random() - 0.5) * 0.08,
+            y: 0.25,
+            z: (Math.random() - 0.5) * 0.08,
+            r: 0.014 + Math.random() * 0.012,
+            vy: 0.55 + Math.random() * 0.25,
+            maxY: 0.28 + hCol
+          });
+        }
+      }
+      for (let i = this.troughBubbles.length - 1; i >= 0; i--) {
+        const tb = this.troughBubbles[i];
+        tb.y += tb.vy * dt;
+        if (tb.y >= tb.maxY) this.troughBubbles.splice(i, 1);
+      }
+      let tbIdx = 0;
+      for (const tb of this.troughBubbles) {
+        this._dummy.position.set(tb.x, tb.y, tb.z);
+        this._dummy.scale.setScalar(tb.r);
+        this._dummy.updateMatrix();
+        this.troughBubbleInst.setMatrixAt(tbIdx++, this._dummy.matrix);
+      }
+      this.troughBubbleInst.count = tbIdx;
+      this.troughBubbleInst.instanceMatrix.needsUpdate = true;
+    } else {
+      this.troughBubbleInst.count = 0;
+    }
+
+    // 7. Пар, бурый газ, дымок прокаливания в муфеле, извержение «вулкана» и струйки дыма горения
+    const mouthY = vesselY + this._mouthHeight(kind);
+    if (sim.volcanoErupting) {
+      busy = true;
+      if (Math.random() < 0.85) {
+        this._spawnSparks(curX, vesselY + 0.18, curZ, 3, Math.random() < 0.5 ? '#fb923c' : '#fde047', 1.35);
+      }
+      if (Math.random() < 0.42) {
+        this._spawnSmokePuff(curX, mouthY + 0.02, curZ, '#3f6212', 0.18 + Math.random() * 0.09, 0.55);
+      }
+      this.flashLight.position.set(curX, vesselY + 0.4, curZ + 0.35);
+      this.flashLight.color.set('#f97316');
+      this.flashLight.intensity = Math.max(this.flashLight.intensity, 3.2 + Math.sin(tSec * 37) * 1.1);
+    }
+    const calciningDry = !a.wet && s.temp > 620 && (sim.gasRate || 0) > 0.05;
+    const emitPlume = (a.wet && s.temp > 72 && !(curBench === 1 && s.tubeOn))
+      || (s.headspace?.gas === 'NO2' && !(curBench === 1 && s.tubeOn))
+      || (s.headspace?.gas === 'SO2' && !(curBench === 1 && s.tubeOn))
+      || calciningDry;
+    if (emitPlume && Math.random() < 0.25) {
+      this._spawnSmokePuff(
+        curX,
+        mouthY + 0.03,
+        curZ + ((s.muffleLvl || 0) > 0 && curBench === 3 ? 0.25 : 0),
+        s.headspace?.gas === 'NO2' ? '#b45309' : (calciningDry ? '#fef3c7' : '#f1f5f9'),
+        0.16 + Math.random() * 0.08,
+        0.42
+      );
+    }
+    for (const c of this.steamClouds) {
+      if (c.life <= 0) {
+        c.sprite.visible = false;
+        continue;
+      }
+      busy = true;
+      c.life -= dt * 0.52;
+      c.y += dt * (c.vy || 0.42);
+      c.x += c.vx * dt + Math.sin(tSec * 4.5 + c.y * 5) * 0.025 * dt;
+      const prog = 1 - Math.max(0, c.life);
+      const sc = c.size * (1 + prog * 2.2);
+      c.sprite.visible = true;
+      c.sprite.position.set(c.x, c.y, c.z);
+      c.sprite.scale.set(sc, sc, 1);
+      c.sprite.material.color.set(c.color);
+      c.sprite.material.opacity = Math.sin(Math.min(1, c.life) * Math.PI) * 0.34;
+    }
+
+    // 7б. Полёт и остывание искр горения
+    for (const sp of this.sparks) {
+      if (sp.life <= 0) {
+        sp.sprite.visible = false;
+        continue;
+      }
+      busy = true;
+      sp.life -= dt;
+      sp.vy -= 0.85 * dt; // лёгкая гравитация после выброса
+      sp.vx *= Math.pow(0.25, dt);
+      sp.vz *= Math.pow(0.25, dt);
+      sp.x += (sp.vx + 0.12 * Math.sin(tSec * 14 + sp.y * 9)) * dt;
+      sp.y += sp.vy * dt;
+      sp.z += sp.vz * dt;
+
+      const lifeFrac = Math.max(0, sp.life / sp.maxLife);
+      sp.sprite.visible = true;
+      sp.sprite.position.set(sp.x, sp.y, sp.z);
+      const sc = sp.size * (0.45 + 0.75 * lifeFrac);
+      sp.sprite.scale.set(sc, sc, 1);
+      sp.sprite.material.color.set(sp.color).lerp(new THREE.Color('#ffffff'), lifeFrac * 0.45);
+      sp.sprite.material.opacity = Math.min(1, lifeFrac * 1.35);
+    }
+
+    // 8. Анимация наливания реактива из склянки
+    if (this.pourAnim.active) {
+      busy = true;
+      this.pourAnim.t += dt;
+      const p = this.pourAnim.t / this.pourAnim.dur;
+      if (p >= 1) {
+        this.pourAnim.active = false;
+        this.pourBottleGroup.visible = false;
+        this.streamMesh.visible = false;
+      } else {
+        this.pourBottleGroup.visible = true;
+        this.pourBottleGroup.position.set(curX + 0.32, mouthY + 0.28, curZ);
+        const tilt = Math.sin(Math.min(1, p * 1.25) * Math.PI) * 1.95;
+        this.pourBottleGroup.rotation.z = tilt;
+
+        if (!this.pourAnim.solid && p > 0.18 && p < 0.84) {
+          const topY = mouthY + 0.12;
+          const botY = a.wet ? liqWorldY : vesselY + 0.04;
+          const h = Math.max(0.1, topY - botY);
+          this.streamMesh.visible = true;
+          this.streamMat.color.set(this.pourAnim.color);
+          this.streamMat.emissive.set('#000000');
+          this.streamMat.emissiveIntensity = 0;
+          this.streamMesh.scale.set(1, h, 1);
+          this.streamMesh.position.set(curX + 0.02, botY + h / 2, curZ);
+        } else {
+          this.streamMesh.visible = false;
+        }
+      }
+    }
+
+    // 8а-2. 3D-анимация переливания и смешивания из другой колбы/пробирки!
+    if (this.vesselPourAnim.active) {
+      busy = true;
+      this.vesselPourAnim.t += dt;
+      const vp = this.vesselPourAnim.t / this.vesselPourAnim.dur;
+      if (vp >= 1) {
+        this.vesselPourAnim.active = false;
+        this.pourVesselGroup.visible = false;
+        if (!this.pourAnim.active) this.streamMesh.visible = false;
+      } else {
+        const srcKind = this.vesselPourAnim.vesselKind || 'tube';
+        for (const k of Object.keys(this.pourVesselShells)) {
+          this.pourVesselShells[k].visible = k === srcKind;
+        }
+        this.pourVesselLiqMat.color.set(this.vesselPourAnim.color || '#dff2fc');
+        if (this.vesselPourAnim.glowColor) {
+          this.pourVesselLiqMat.emissive.set(this.vesselPourAnim.glowColor);
+          this.pourVesselLiqMat.emissiveIntensity = 2.0;
+        } else {
+          this.pourVesselLiqMat.emissive.set('#000000');
+          this.pourVesselLiqMat.emissiveIntensity = 0;
+        }
+
+        const swing = Math.sin(Math.min(1, vp * 1.12) * Math.PI);
+        this.pourVesselGroup.visible = true;
+        this.pourVesselGroup.position.set(curX - 0.30 + (1 - swing) * -0.18, mouthY + 0.24 + swing * 0.06, curZ + 0.04);
+        this.pourVesselGroup.rotation.z = -swing * 1.92;
+
+        if (vp > 0.16 && vp < 0.86) {
+          const topY = mouthY + 0.14;
+          const botY = a.wet ? liqWorldY : vesselY + 0.04;
+          const h = Math.max(0.1, topY - botY);
+          this.streamMesh.visible = true;
+          this.streamMat.color.set(this.vesselPourAnim.color || '#dff2fc');
+          if (this.vesselPourAnim.glowColor) {
+            this.streamMat.emissive.set(this.vesselPourAnim.glowColor);
+            this.streamMat.emissiveIntensity = 2.2;
+          } else {
+            this.streamMat.emissive.set('#000000');
+            this.streamMat.emissiveIntensity = 0;
+          }
+          this.streamMesh.scale.set(1.15, h, 1.15);
+          this.streamMesh.position.set(curX - 0.02, botY + h / 2, curZ);
+        } else if (!this.pourAnim.active) {
+          this.streamMesh.visible = false;
+        }
+      }
+    }
+
+    // 8б. Капля титранта из крана бюретки и поворот вентиля крана
+    if (this.dripAnim.active && s.buretteOn) {
+      busy = true;
+      this.dripAnim.t += dt;
+      const dp = this.dripAnim.t / this.dripAnim.dur;
+      if (dp >= 1) {
+        this.dripAnim.active = false;
+        this.buretteDropMesh.visible = false;
+        this.buretteValve.rotation.z = 0;
+      } else {
+        this.buretteValve.rotation.z = Math.sin(dp * Math.PI) * 1.1;
+        const startY = mouthY + 0.18;
+        const endY = a.wet ? liqWorldY : vesselY + 0.05;
+        this.buretteDropMesh.visible = true;
+        this.buretteDropMat.color.set(this.dripAnim.color);
+        this.buretteDropMesh.position.set(curX, startY - (startY - endY) * (dp * dp), curZ);
+      }
+    } else {
+      this.buretteDropMesh.visible = false;
+    }
+
+    // 8в. Анимация фильтрования осадка через стеклянную воронку со складчатым бумажным фильтром
+    if (this.filterAnim.active) {
+      busy = true;
+      this.filterAnim.t += dt;
+      const fp = this.filterAnim.t / this.filterAnim.dur;
+      if (fp >= 1) {
+        this.filterAnim.active = false;
+        this.filterActiveGroup.visible = false;
+      } else {
+        this.filterActiveGroup.visible = true;
+        this.filterActiveGroup.position.set(curX, mouthY + 0.04, curZ);
+        this.actFilterPaperMat.color.set('#ffffff').lerp(new THREE.Color(this.filterAnim.cakeColor), Math.min(1, fp * 1.5));
+        this.filterFiltrateStream.visible = fp > 0.12 && fp < 0.90;
+        this.filterFiltrateStream.material.color.set(a.liquidColor || '#dff2fc');
+      }
+    }
+
+    // 9. Реалистичное горение и накал на инструментах (лучина, нихромовая петля, тигельные щипцы)
+    if (this.toolAnim.kind) {
+      busy = true;
+      this.toolAnim.t += dt;
+      const p = this.toolAnim.t / this.toolAnim.dur;
+      if (p >= 1) {
+        this.toolAnim.kind = '';
+        this.propGroup.visible = false;
+        this.h2PopMesh.visible = false;
+      } else {
+        this.propGroup.visible = true;
+        const k = this.toolAnim.kind;
+        const ex = this.toolAnim.extra || {};
+        this.splintGroup.visible = k === 'splint';
+        this.loopGroup.visible = k === 'loop';
+        this.tongsGroup.visible = k === 'tongs';
+
+        const swing = Math.sin(p * Math.PI);
+
+        if (k === 'splint') {
+          const useCollector = curBench === 1 && s.tubeOn;
+          const tx = useCollector ? 1.55 : curX;
+          const ty = useCollector ? 1.52 : mouthY + 0.05;
+          const tz = useCollector ? 0 : curZ;
+          const px = tx + (1 - swing) * 0.42;
+          const py = ty + (1 - swing) * 0.24;
+          const pz = tz + 0.08;
+          this.propGroup.position.set(px, py, pz);
+
+          const snuffed = !!ex.extinguish && p > 0.40;
+          const isH2Pop = ex.flashColor === '#60a5fa';
+          const isSootyC2H2 = !!ex.sootyFlare;
+          const isO2Flare = !!ex.flare && !isH2Pop;
+
+          this.splintFlameMesh.visible = !snuffed;
+          const uS = this.splintFlameMat.uniforms;
+          uS.uTime.value = tSec * 1.15;
+          uS.uFlicker.value = 0.92 + 0.14 * Math.sin(tSec * 27);
+          uS.uPower.value = (isO2Flare || isSootyC2H2) && p > 0.30 ? 1.55 : 0.85;
+          uS.uTint.value.set(isO2Flare && p > 0.30 ? '#fef08a' : (isSootyC2H2 && p > 0.30 ? '#f97316' : '#ff9e2c'));
+          uS.uTintMix.value = (isO2Flare || isSootyC2H2) && p > 0.30 ? 0.84 : 0.0;
+
+          const flareScale = (isO2Flare || isSootyC2H2) && p > 0.32 ? 1.95 + 0.28 * Math.sin(tSec * 35) : (isH2Pop && p > 0.34 && p < 0.55 ? 0.35 : 1.0);
+          this.splintFlameMesh.scale.set(flareScale * 0.95, flareScale * 1.15, flareScale * 0.95);
+          this.splintEmberMat.emissiveIntensity = snuffed
+            ? Math.max(0.15, 2.0 * (1 - (p - 0.40) / 0.60))
+            : ((isO2Flare || isSootyC2H2) && p > 0.32 ? 3.2 : 1.4);
+
+          // Эффекты в момент контакта с газом (p ≈ 0.36)
+          if (p > 0.34 && !this.toolAnim.burstDone) {
+            this.toolAnim.burstDone = true;
+            if (isO2Flare) {
+              this._spawnSparks(px, py + 0.06, pz, 20, '#fde047', 1.15);
+            } else if (isSootyC2H2) {
+              this._spawnSparks(px, py + 0.06, pz, 12, '#fb923c', 0.95);
+              this._spawnSmokePuff(px, py + 0.12, pz, '#18181b', 0.20, 0.46);
+              this._spawnSmokePuff(px - 0.03, py + 0.16, pz, '#27272a', 0.22, 0.50);
+            } else if (isH2Pop) {
+              this._spawnSparks(tx, ty, tz + 0.04, 12, '#93c5fd', 1.25);
+              this._spawnSmokePuff(tx, ty + 0.04, tz, '#e0f2fe', 0.22, 0.35);
+            } else if (ex.extinguish) {
+              this._spawnSmokePuff(px, py + 0.03, pz, '#cbd5e1', 0.11, 0.30);
+              this._spawnSmokePuff(px + 0.02, py + 0.06, pz, '#94a3b8', 0.13, 0.34);
+            }
+          }
+          if (isSootyC2H2 && p > 0.34 && p < 0.85 && Math.random() < 0.38) {
+            this._spawnSmokePuff(px, py + 0.14, pz, '#18181b', 0.16, 0.48);
+          }
+          if (snuffed && Math.random() < 0.22) {
+            this._spawnSmokePuff(px, py + 0.02, pz, '#cbd5e1', 0.09, 0.28);
+          }
+
+          // Волна хлопка водорода H₂
+          if (isH2Pop && p > 0.32 && p < 0.66) {
+            const kp = (p - 0.32) / 0.34;
+            this.h2PopMesh.visible = true;
+            this.h2PopMesh.position.set(tx, ty, tz + 0.04);
+            this.h2PopMesh.scale.setScalar(0.6 + kp * 3.4);
+            this.h2PopMat.opacity = (1 - kp) * 0.55;
+          } else {
+            this.h2PopMesh.visible = false;
+          }
+        } else if (k === 'loop') {
+          this.h2PopMesh.visible = false;
+          const px = this.vesselX + (1 - swing) * 0.46;
+          const py = 0.90 + (1 - swing) * 0.12;
+          this.propGroup.position.set(px, py, 0.05);
+          // Нихромовая петля раскаляется докрасна при входе в пламя
+          const glow = Math.pow(swing, 1.4);
+          this.loopWireMat.emissive.set(ex.color || '#ff5d00');
+          this.loopWireMat.emissiveIntensity = glow * 2.4;
+          if (swing > 0.72 && Math.random() < 0.28) {
+            this._spawnSparks(px, py + 0.04, 0.05, 1, ex.color || '#ffb703', 0.6);
+          }
+        } else if (k === 'tongs') {
+          this.h2PopMesh.visible = false;
+          const isClBurn = !!ex.clBurn;
+          const isSulfur = !!ex.sulfurBurn;
+          const baseX = (isClBurn || isSulfur) ? curX : this.vesselX;
+          const baseZ = (isClBurn || isSulfur) ? curZ : 0;
+          const targetY = (isClBurn || isSulfur) ? vesselY + 0.38 : 0.94;
+          const px = baseX + (1 - swing) * 0.52;
+          const py = targetY + (1 - swing) * 0.32;
+          const pz = baseZ + 0.06;
+          this.propGroup.position.set(px, py, pz);
+
+          const isMg = ex.metal === 'mg';
+          const isCu = ex.metal === 'cu';
+          const heat = Math.min(1, swing * 1.35);
+
+          // Изменение цвета образца: Mg белеет в пепел, S плавится и горит голубым, Cu чернеет оксидом CuO
+          if (isSulfur) {
+            this.tongsSampleMat.color.set(p > 0.35 ? '#b45309' : '#facc15');
+            this.tongsSampleMat.emissive.set('#38bdf8');
+            this.tongsSampleMat.emissiveIntensity = p > 0.20 && p < 0.88 ? 2.2 : 0.4;
+          } else if (isMg) {
+            this.tongsSampleMat.color.set(p > 0.55 ? '#f8fafc' : '#cbd5e1');
+            this.tongsSampleMat.emissive.set('#ffffff');
+            this.tongsSampleMat.emissiveIntensity = p > 0.24 && p < 0.84 ? 3.5 : heat * 0.6;
+          } else if (isCu) {
+            this.tongsSampleMat.color.set(p > 0.52 ? '#1c1917' : '#c8753c');
+            this.tongsSampleMat.emissive.set(isClBurn ? '#f97316' : '#ef4444');
+            this.tongsSampleMat.emissiveIntensity = heat * (isClBurn ? 2.2 : 1.35);
+          } else {
+            this.tongsSampleMat.color.set('#57534e');
+            this.tongsSampleMat.emissive.set('#f97316');
+            this.tongsSampleMat.emissiveIntensity = heat * 2.1;
+          }
+
+          // Ослепительное пламя магния, голубое пламя серы или вспышка в хлоре
+          const showSampleFlame = (isMg && p > 0.22 && p < 0.86) || (isClBurn && p > 0.26 && p < 0.82) || (isSulfur && p > 0.20 && p < 0.88);
+          this.tongsFlameMesh.visible = showSampleFlame;
+          if (showSampleFlame) {
+            const uT = this.tongsFlameMat.uniforms;
+            uT.uTime.value = tSec * 1.4;
+            uT.uFlicker.value = 0.9 + 0.25 * Math.sin(tSec * 38);
+            uT.uPower.value = isSulfur ? 1.15 : 1.4;
+            uT.uTint.value.set(isMg ? '#ffffff' : (isSulfur ? '#38bdf8' : '#f97316'));
+            uT.uTintMix.value = 0.95;
+            const fSc = isMg ? 1.55 : (isSulfur ? 1.1 : 1.15);
+            this.tongsFlameMesh.scale.set(fSc, fSc * 1.25, fSc);
+          }
+
+          this.tongsGlareSprite.visible = isMg && p > 0.22 && p < 0.86;
+          if (this.tongsGlareSprite.visible) {
+            const pulse = 0.85 + 0.22 * Math.sin(tSec * 44);
+            this.tongsGlareMat.opacity = 0.82 * Math.sin(((p - 0.22) / 0.64) * Math.PI);
+            this.tongsGlareSprite.scale.set(1.05 * pulse, 1.05 * pulse, 1);
+          }
+
+          if (isMg && p > 0.25 && p < 0.80) {
+            if (Math.random() < 0.55) this._spawnSparks(px, py + 0.03, pz, 2, '#ffffff', 1.15);
+            if (Math.random() < 0.30) this._spawnSmokePuff(px, py + 0.08, pz, '#f8fafc', 0.16, 0.44);
+          } else if (isSulfur && p > 0.24 && p < 0.84) {
+            if (Math.random() < 0.35) this._spawnSmokePuff(px, py + 0.06, pz, '#e0f2fe', 0.17, 0.38);
+          } else if (isClBurn && p > 0.28 && p < 0.80) {
+            if (Math.random() < 0.50) this._spawnSparks(px, py, pz, 2, '#fb923c', 0.95);
+            if (Math.random() < 0.35) this._spawnSmokePuff(px, py + 0.06, pz, '#b45309', 0.19, 0.36);
+          }
+        }
+      }
+    }
+
+    return busy;
+  }
+
+  destroy() {
+    if (this.raf) cancelAnimationFrame(this.raf);
+    if (this._onResize) window.removeEventListener('resize', this._onResize);
+    if (this.renderer) this.renderer.dispose();
+  }
+}

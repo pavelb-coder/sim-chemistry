@@ -1,0 +1,21 @@
+.chemlab3d-launch {
+    margin: 1rem 0;
+}
+
+.chemlab3d-frame {
+    display: block;
+    width: 100%;
+    height: min(88vh, 1000px);
+    min-height: 700px;
+    border: 1px solid #d7dee8;
+    border-radius: 12px;
+    background: #f1f5f9;
+}
+
+@media (max-width: 767px) {
+    .chemlab3d-frame {
+        height: 82vh;
+        min-height: 620px;
+        border-radius: 8px;
+    }
+}

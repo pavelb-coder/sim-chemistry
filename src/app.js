@@ -16,7 +16,17 @@ import { Lab3DScene } from './lab3d.js?v=2.3.0';
 import { buildReportHTML } from './report.js?v=2.3.0';
 import { getReagentIconSVG, getCategoryIconSVG, getReagentHazardKind } from './icons.js?v=2.3.0';
 
-const STORAGE_DONE_KEY = 'chemlab3d.done.v1';
+const STORAGE_DONE_KEY = (() => {
+  try {
+    // Moodle activities may run on shared classroom computers. Scope the locally stored
+    // progress key per activity/user when an LMS supplies an opaque storage token.
+    const storageScope = new URLSearchParams(window.location.search).get('storage');
+    if (storageScope && /^[a-zA-Z0-9_-]{1,80}$/.test(storageScope)) {
+      return `chemlab3d.done.v1.${storageScope}`;
+    }
+  } catch (e) {}
+  return 'chemlab3d.done.v1';
+})();
 const THEMES = ['classic', 'slate', 'warm'];
 const BENCH_ORDER = [3, 1, 2]; // пространственный порядок столов в зале слева направо (x = -5, 0, +5)
 const SLOT_SYMBOLS = ['①', '②', '③'];

@@ -74,3 +74,7 @@
 - **Windows**: `python -m http.server 8081` (или `py -m http.server 8081`)
 
 Затем откройте `http://localhost:8081`.
+
+## Плагин для Moodle
+
+Отдельная ветка **`feature/moodle-chemlab3d`** содержит Moodle activity module `mod_chemlab3d` в `moodle/mod/chemlab3d/`. Он встраивает лабораторию в курс, позволяет учителю выбрать один из практикумов `01–33` или свободный режим и при желании автоматически подготовить исходные вещества. Инструкция по установке и сборке ZIP: [`moodle/mod/chemlab3d/README.md`](moodle/mod/chemlab3d/README.md).
